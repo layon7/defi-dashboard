@@ -92,7 +92,7 @@ function OverviewTab({ prices, stats, history }) {
   const kpis = [
     { label:'MARKET CAP CRIPTO',  value: fmt(stats?.total_market_cap?.usd), sub: stats ? `BTC dom. ${stats.market_cap_percentage?.btc?.toFixed(1)}%` : 'Cargando…', accent:true },
     { label:'VOLUMEN 24H',        value: fmt(stats?.total_volume?.usd),      sub:'Mercado global' },
-    { label:'ETH PRECIO',         value: eth ? `$${eth.current_price.toLocaleString()}` : '…', sub: eth ? pct(eth.price_change_percentage_24h) : '…' },
+    { label:'ETH PRECIO',         value: eth ? `$${(eth.current_price ?? 0).toLocaleString()}` : '…', sub: eth ? pct(eth.price_change_percentage_24h) : '…' },
     { label:'ACTIVOS RASTREADOS', value: stats?.active_cryptocurrencies?.toLocaleString() || '…', sub:'CoinGecko live' },
   ]
   return (
@@ -207,7 +207,7 @@ function PricesTab({ prices, loading, lastUpdate, refresh }) {
                     </div>
                   </td>
                   <td style={{ fontSize:14, padding:'12px 0', borderBottom:'1px solid rgba(255,140,0,0.07)', textAlign:'right', fontWeight:700, color:WHITE }}>
-                    ${p.current_price.toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:6 })}
+                    ${(p.current_price ?? 0).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:6 })}
                   </td>
                   <td style={{ fontSize:14, padding:'12px 0', borderBottom:'1px solid rgba(255,140,0,0.07)', textAlign:'right', fontWeight:700, color: chg >= 0 ? G : R }}>
                     {pct(chg)}
