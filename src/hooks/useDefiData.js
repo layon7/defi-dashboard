@@ -1,36 +1,39 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  fetchCoinGeckoPrices,
-  fetchGlobalStats,
-  fetchCoinHistory,
-  fetchWalletPortfolio,
-  fetchWalletTokens,
-  fetchWalletProtocols,
+  fetchCoinGeckoPrices, fetchGlobalStats, fetchCoinHistory,
+  fetchWalletPortfolio, fetchWalletTokens, fetchWalletProtocols, fetchWalletHistory,
 } from '../services/api.js'
 
+// Mapa CoinGecko ID → símbolo Binance WS (los más comunes del top 500)
 const CG_TO_BINANCE = {
-  'bitcoin':       'btcusdt',
-  'ethereum':      'ethusdt',
-  'usd-coin':       null,
-  'uniswap':       'uniusdt',
-  'aave':          'aaveusdt',
-  'chainlink':     'linkusdt',
-  'matic-network': 'maticusdt',
-  'solana':        'solusdt',
-  'binancecoin':   'bnbusdt',
-  'avalanche-2':   'avaxusdt',
-  'dogecoin':      'dogeusdt',
-  'arbitrum':      'arbusdt',
+  'bitcoin':'btcusdt','ethereum':'ethusdt','binancecoin':'bnbusdt',
+  'solana':'solusdt','ripple':'xrpusdt','dogecoin':'dogeusdt',
+  'tron':'trxusdt','cardano':'adausdt','avalanche-2':'avaxusdt',
+  'shiba-inu':'shibusdt','chainlink':'linkusdt','polkadot':'dotusdt',
+  'uniswap':'uniusdt','near':'nearusdt','aave':'aaveusdt',
+  'matic-network':'maticusdt','arbitrum':'arbusdt','optimism':'opusdt',
+  'cosmos':'atomusdt','stellar':'xlmusdt','monero':'xmrusdt',
+  'algorand':'algousdt','filecoin':'filusdt','internet-computer':'icpusdt',
+  'hedera-hashgraph':'hbarusdt','vechain':'vetusdt','theta-token':'thetausdt',
+  'the-sandbox':'sandusdt','decentraland':'manausdt','axie-infinity':'axsusdt',
+  'maker':'mkrusdt','compound-governance-token':'compusdt','curve-dao-token':'crvusdt',
+  'synthetix-network-token':'snxusdt','yearn-finance':'yfiusdt','sushi':'sushiusdt',
+  '1inch':'1inchusdt','pancakeswap-token':'cakeusdt','injective-protocol':'injeusdt',
+  'aptos':'aptusdt','sui':'suiusdt','sei-network':'seiusdt',
+  'pepe':'pepeusdt','floki':'flokiusdt','bonk':'bonkusdt',
+  'render-token':'renderusdt','fetch-ai':'fetusdt','ocean-protocol':'oceanusdt',
+  'gala':'galausdt','enjincoin':'enjusdt','chiliz':'chzusdt',
+  'flow':'flowusdt','harmony':'oneusdt','zilliqa':'zilusdt',
 }
 
-// ── CoinGecko base + Binance WebSocket tick a tick ──
+// ── Precios: CoinGecko base + Binance WS tick a tick ──────────
 export function usePrices() {
-  const [prices, setPrices]           = useState([])
-  const [loading, setLoading]         = useState(true)
-  const [error, setError]             = useState(null)
-  const [lastUpdate, setLastUpdate]   = useState(null)
-  const [wsStatus, setWsStatus]       = useState('connecting')
-  const wsRef    = useRef(null)
+  const [prices, setPrices]         = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
+  const [lastUpdate, setLastUpdate] = useState(null)
+  const [wsStatus, setWsStatus]     = useState('connecting')
+  const wsRef     = useRef(null)
   const pricesRef = useRef([])
 
   const loadBase = useCallback(async () => {
@@ -40,11 +43,8 @@ export function usePrices() {
       setPrices(data)
       setLastUpdate(new Date())
       setError(null)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
   }, [])
 
   const connectWS = useCallback(() => {
@@ -83,17 +83,20 @@ export function usePrices() {
   return { prices, loading, error, lastUpdate, wsStatus, refresh: loadBase }
 }
 
-// ── Stats globales ──
+// ── Stats globales ─────────────────────────────────────────────
 export function useGlobalStats() {
   const [stats, setStats]     = useState(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
-    fetchGlobalStats().then(d => setStats(d.data)).catch(() => setStats(null)).finally(() => setLoading(false))
+    fetchGlobalStats()
+      .then(d => setStats(d.data))
+      .catch(() => setStats(null))
+      .finally(() => setLoading(false))
   }, [])
   return { stats, loading }
 }
 
-// ── Historial ETH 7 días ──
+// ── Historial ETH 7 días ───────────────────────────────────────
 export function useEthHistory() {
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
@@ -101,7 +104,7 @@ export function useEthHistory() {
     fetchCoinHistory('ethereum', 7)
       .then(d => {
         const days = ['Lun','Mar','Mié','Jue','Vie','Sáb','Hoy']
-        setHistory(d.prices.slice(-7).map((p, i) => ({ day: days[i] || `D${i+1}`, value: p[1], ts: p[0] })))
+        setHistory(d.prices.slice(-7).map((p, i) => ({ day: days[i] || `D${i+1}`, value: p[1] })))
       })
       .catch(() => setHistory([]))
       .finally(() => setLoading(false))
@@ -109,28 +112,28 @@ export function useEthHistory() {
   return { history, loading }
 }
 
-// ── Watchlist persistente ──
-const DEFAULT_WATCHLIST = ['bitcoin','ethereum','solana','chainlink','aave','binancecoin']
-
+// ── Watchlist — VACÍA por defecto ─────────────────────────────
 export function useWatchlist() {
   const [watchlist, setWatchlist] = useState(() => {
     try {
-      const saved = localStorage.getItem('defi_watchlist')
-      return saved ? JSON.parse(saved) : DEFAULT_WATCHLIST
-    } catch { return DEFAULT_WATCHLIST }
+      const saved = localStorage.getItem('defi_watchlist_v3')
+      return saved ? JSON.parse(saved) : []
+    } catch { return [] }
   })
-  const save   = (list) => { setWatchlist(list); try { localStorage.setItem('defi_watchlist', JSON.stringify(list)) } catch {} }
-  const add    = (id) => { if (!watchlist.includes(id)) save([...watchlist, id]) }
-  const remove = (id) => save(watchlist.filter(w => w !== id))
-  const toggle = (id) => watchlist.includes(id) ? remove(id) : add(id)
-  return { watchlist, add, remove, toggle }
+  const save   = (list) => { setWatchlist(list); try { localStorage.setItem('defi_watchlist_v3', JSON.stringify(list)) } catch {} }
+  const add    = (id)   => { if (!watchlist.includes(id)) save([...watchlist, id]) }
+  const remove = (id)   => save(watchlist.filter(w => w !== id))
+  const toggle = (id)   => watchlist.includes(id) ? remove(id) : add(id)
+  const clear  = ()     => save([])
+  return { watchlist, add, remove, toggle, clear }
 }
 
-// ── Wallet DeBank con auto-refresh 2min ──
+// ── Wallet DeBank completa ─────────────────────────────────────
 export function useWallet(address) {
   const [portfolio,  setPortfolio]  = useState(null)
   const [tokens,     setTokens]     = useState([])
   const [protocols,  setProtocols]  = useState([])
+  const [history,    setHistory]    = useState([])
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState(null)
 
@@ -138,12 +141,16 @@ export function useWallet(address) {
     if (!addr || !addr.startsWith('0x')) return
     setLoading(true); setError(null)
     try {
-      const [port, toks, protos] = await Promise.all([
+      const [port, toks, protos, hist] = await Promise.all([
         fetchWalletPortfolio(addr),
         fetchWalletTokens(addr),
         fetchWalletProtocols(addr),
+        fetchWalletHistory(addr),
       ])
-      setPortfolio(port); setTokens(toks || []); setProtocols(protos || [])
+      setPortfolio(port)
+      setTokens(toks    || [])
+      setProtocols(protos || [])
+      setHistory(hist?.history_list || [])
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
@@ -155,5 +162,5 @@ export function useWallet(address) {
     return () => clearInterval(interval)
   }, [address, load])
 
-  return { portfolio, tokens, protocols, loading, error, refresh: () => load(address) }
+  return { portfolio, tokens, protocols, history, loading, error, refresh: () => load(address) }
 }
