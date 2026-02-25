@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   fetchCoinGeckoPrices, fetchGlobalStats, fetchCoinHistory,
   fetchWalletPortfolio, fetchWalletTokens, fetchWalletProtocols, fetchWalletHistory,
+  searchCoins, fetchCoinsByIds,
 } from '../services/api.js'
 
-// Mapa CoinGecko ID → símbolo Binance WS (los más comunes del top 500)
 const CG_TO_BINANCE = {
   'bitcoin':'btcusdt','ethereum':'ethusdt','binancecoin':'bnbusdt',
   'solana':'solusdt','ripple':'xrpusdt','dogecoin':'dogeusdt',
@@ -13,20 +13,15 @@ const CG_TO_BINANCE = {
   'uniswap':'uniusdt','near':'nearusdt','aave':'aaveusdt',
   'matic-network':'maticusdt','arbitrum':'arbusdt','optimism':'opusdt',
   'cosmos':'atomusdt','stellar':'xlmusdt','monero':'xmrusdt',
-  'algorand':'algousdt','filecoin':'filusdt','internet-computer':'icpusdt',
-  'hedera-hashgraph':'hbarusdt','vechain':'vetusdt','theta-token':'thetausdt',
+  'filecoin':'filusdt','internet-computer':'icpusdt','vechain':'vetusdt',
   'the-sandbox':'sandusdt','decentraland':'manausdt','axie-infinity':'axsusdt',
-  'maker':'mkrusdt','compound-governance-token':'compusdt','curve-dao-token':'crvusdt',
-  'synthetix-network-token':'snxusdt','yearn-finance':'yfiusdt','sushi':'sushiusdt',
-  '1inch':'1inchusdt','pancakeswap-token':'cakeusdt','injective-protocol':'injeusdt',
-  'aptos':'aptusdt','sui':'suiusdt','sei-network':'seiusdt',
-  'pepe':'pepeusdt','floki':'flokiusdt','bonk':'bonkusdt',
-  'render-token':'renderusdt','fetch-ai':'fetusdt','ocean-protocol':'oceanusdt',
-  'gala':'galausdt','enjincoin':'enjusdt','chiliz':'chzusdt',
-  'flow':'flowusdt','harmony':'oneusdt','zilliqa':'zilusdt',
+  'maker':'mkrusdt','curve-dao-token':'crvusdt','sushi':'sushiusdt',
+  'injective-protocol':'injeusdt','aptos':'aptusdt','sui':'suiusdt',
+  'pepe':'pepeusdt','render-token':'renderusdt','fetch-ai':'fetusdt',
+  'gala':'galausdt','chiliz':'chzusdt','flow':'flowusdt',
 }
 
-// ── Precios: CoinGecko base + Binance WS tick a tick ──────────
+// ── Precios CoinGecko + Binance WS ────────────────────────────
 export function usePrices() {
   const [prices, setPrices]         = useState([])
   const [loading, setLoading]       = useState(true)
@@ -83,20 +78,61 @@ export function usePrices() {
   return { prices, loading, error, lastUpdate, wsStatus, refresh: loadBase }
 }
 
+// ── Búsqueda global — busca en TODO CoinGecko, no solo top 500 ──
+export function useGlobalSearch(query, localPrices) {
+  const [results, setResults]   = useState([])
+  const [loading, setLoading]   = useState(false)
+  const debounceRef = useRef(null)
+
+  useEffect(() => {
+    if (!query || query.length < 2) { setResults([]); return }
+
+    // Primero filtra local (top 500)
+    const local = localPrices.filter(p =>
+      p.name.toLowerCase().includes(query.toLowerCase()) ||
+      p.symbol.toLowerCase().includes(query.toLowerCase())
+    )
+
+    // Luego busca globalmente con debounce 500ms
+    clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true)
+      try {
+        const searchRes = await searchCoins(query)
+        // IDs que no están ya en resultados locales
+        const localIds  = new Set(local.map(p => p.id))
+        const newIds    = searchRes.filter(c => !localIds.has(c.id)).map(c => c.id)
+
+        if (newIds.length > 0) {
+          const extra = await fetchCoinsByIds(newIds)
+          setResults([...local, ...extra])
+        } else {
+          setResults(local)
+        }
+      } catch {
+        setResults(local)
+      } finally {
+        setLoading(false)
+      }
+    }, 500)
+
+    return () => clearTimeout(debounceRef.current)
+  }, [query, localPrices])
+
+  return { results, loading }
+}
+
 // ── Stats globales ─────────────────────────────────────────────
 export function useGlobalStats() {
   const [stats, setStats]     = useState(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
-    fetchGlobalStats()
-      .then(d => setStats(d.data))
-      .catch(() => setStats(null))
-      .finally(() => setLoading(false))
+    fetchGlobalStats().then(d => setStats(d.data)).catch(() => setStats(null)).finally(() => setLoading(false))
   }, [])
   return { stats, loading }
 }
 
-// ── Historial ETH 7 días ───────────────────────────────────────
+// ── Historial ETH 7d ───────────────────────────────────────────
 export function useEthHistory() {
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
@@ -112,23 +148,37 @@ export function useEthHistory() {
   return { history, loading }
 }
 
-// ── Watchlist — VACÍA por defecto ─────────────────────────────
+// ── Watchlist vacía por defecto ────────────────────────────────
 export function useWatchlist() {
   const [watchlist, setWatchlist] = useState(() => {
-    try {
-      const saved = localStorage.getItem('defi_watchlist_v3')
-      return saved ? JSON.parse(saved) : []
-    } catch { return [] }
+    try { const s = localStorage.getItem('defi_watchlist_v4'); return s ? JSON.parse(s) : [] }
+    catch { return [] }
   })
-  const save   = (list) => { setWatchlist(list); try { localStorage.setItem('defi_watchlist_v3', JSON.stringify(list)) } catch {} }
-  const add    = (id)   => { if (!watchlist.includes(id)) save([...watchlist, id]) }
-  const remove = (id)   => save(watchlist.filter(w => w !== id))
-  const toggle = (id)   => watchlist.includes(id) ? remove(id) : add(id)
-  const clear  = ()     => save([])
-  return { watchlist, add, remove, toggle, clear }
+  // También guarda monedas extra (fuera del top500) para que persistan
+  const [extraCoins, setExtraCoins] = useState(() => {
+    try { const s = localStorage.getItem('defi_extra_coins'); return s ? JSON.parse(s) : [] }
+    catch { return [] }
+  })
+
+  const save      = (list) => { setWatchlist(list); try { localStorage.setItem('defi_watchlist_v4', JSON.stringify(list)) } catch {} }
+  const saveExtra = (coins) => { setExtraCoins(coins); try { localStorage.setItem('defi_extra_coins', JSON.stringify(coins)) } catch {} }
+
+  const add = (id, coinData) => {
+    if (!watchlist.includes(id)) save([...watchlist, id])
+    // Si tiene datos de precio (moneda extra), guárdala
+    if (coinData && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, coinData])
+  }
+  const remove = (id) => {
+    save(watchlist.filter(w => w !== id))
+    saveExtra(extraCoins.filter(c => c.id !== id))
+  }
+  const toggle = (id, coinData) => watchlist.includes(id) ? remove(id) : add(id, coinData)
+  const clear  = () => { save([]); saveExtra([]) }
+
+  return { watchlist, extraCoins, add, remove, toggle, clear }
 }
 
-// ── Wallet DeBank completa ─────────────────────────────────────
+// ── Wallet DeBank ──────────────────────────────────────────────
 export function useWallet(address) {
   const [portfolio,  setPortfolio]  = useState(null)
   const [tokens,     setTokens]     = useState([])
@@ -142,14 +192,10 @@ export function useWallet(address) {
     setLoading(true); setError(null)
     try {
       const [port, toks, protos, hist] = await Promise.all([
-        fetchWalletPortfolio(addr),
-        fetchWalletTokens(addr),
-        fetchWalletProtocols(addr),
-        fetchWalletHistory(addr),
+        fetchWalletPortfolio(addr), fetchWalletTokens(addr),
+        fetchWalletProtocols(addr), fetchWalletHistory(addr),
       ])
-      setPortfolio(port)
-      setTokens(toks    || [])
-      setProtocols(protos || [])
+      setPortfolio(port); setTokens(toks || []); setProtocols(protos || [])
       setHistory(hist?.history_list || [])
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
