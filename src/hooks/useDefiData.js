@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  fetchCoinGeckoPrices, fetchGlobalStats, fetchCoinHistory,
-  searchCoins, fetchCoinsByIds, fetchFearGreed, fetchOHLC,
+  fetchCoinGeckoPrices, fetchGlobalStats, fetchFearGreed,
+  fetchOHLC, fetchPriceHistory,
+  searchCoins, fetchCoinsByIds,
   fetchZerionPortfolio, fetchZerionPositions, fetchZerionTransactions,
 } from '../services/api.js'
+import { generateSignal } from '../utils/indicators.js'
 
 const CG_TO_BINANCE = {
   'bitcoin':'btcusdt','ethereum':'ethusdt','binancecoin':'bnbusdt',
@@ -18,7 +20,6 @@ const CG_TO_BINANCE = {
   'render-token':'renderusdt','chiliz':'chzusdt',
 }
 
-// ── Precios: CoinGecko + Binance WS (optimizado) ──────────────
 export function usePrices() {
   const [prices, setPrices]         = useState([])
   const [loading, setLoading]       = useState(true)
@@ -69,29 +70,26 @@ export function usePrices() {
   return { prices, loading, lastUpdate, wsStatus }
 }
 
-// ── Búsqueda global (arreglada, sin loops) ────────────────────
+// ── Búsqueda global ───────────────────────────────────────────
 export function useGlobalSearch(query, localPrices) {
   const [results, setResults]     = useState([])
   const [searching, setSearching] = useState(false)
-  const timerRef   = useRef(null)
-  const localRef   = useRef(localPrices)
-
+  const timerRef = useRef(null)
+  const localRef = useRef(localPrices)
   useEffect(() => { localRef.current = localPrices }, [localPrices])
 
   useEffect(() => {
     if (!query || query.trim().length < 2) { setResults([]); setSearching(false); return }
-
     const local = localRef.current.filter(p =>
       p.name.toLowerCase().includes(query.toLowerCase()) ||
       p.symbol.toLowerCase().includes(query.toLowerCase())
     )
     setResults(local)
     setSearching(true)
-
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(async () => {
       try {
-        const found  = await searchCoins(query)
+        const found    = await searchCoins(query)
         const localSet = new Set(localRef.current.map(p=>p.id))
         const newIds   = found.filter(c=>!localSet.has(c.id)).map(c=>c.id)
         const extra    = newIds.length > 0 ? await fetchCoinsByIds(newIds) : []
@@ -99,14 +97,12 @@ export function useGlobalSearch(query, localPrices) {
       } catch { setResults(local) }
       finally { setSearching(false) }
     }, 600)
-
     return () => clearTimeout(timerRef.current)
   }, [query])
 
   return { results, searching }
 }
 
-// ── Stats globales ────────────────────────────────────────────
 export function useGlobalStats() {
   const [stats, setStats] = useState(null)
   useEffect(() => {
@@ -115,16 +111,14 @@ export function useGlobalStats() {
   return { stats }
 }
 
-// ── Fear & Greed Index ────────────────────────────────────────
 export function useFearGreed() {
-  const [data, setData] = useState(null)
+  const [fearGreed, setFearGreed] = useState(null)
   useEffect(() => {
-    fetchFearGreed().then(setData).catch(()=>setData(null))
-    // Refresca cada hora
-    const iv = setInterval(() => fetchFearGreed().then(setData).catch(()=>{}), 3600000)
+    fetchFearGreed().then(setFearGreed).catch(()=>setFearGreed(null))
+    const iv = setInterval(() => fetchFearGreed().then(setFearGreed).catch(()=>{}), 3600000)
     return () => clearInterval(iv)
   }, [])
-  return { fearGreed: data }
+  return { fearGreed }
 }
 
 // ── OHLC para gráfico de velas ────────────────────────────────
@@ -136,9 +130,8 @@ export function useOHLC(coinId, days = 7) {
     if (!coinId) { setCandles([]); return }
     setLoading(true)
     fetchOHLC(coinId, days)
-      .then(data => {
-        // data = [[ts, open, high, low, close], ...]
-        setCandles(data.map(([ts, o, h, l, c]) => ({
+      .then(raw => {
+        setCandles(raw.map(([ts,o,h,l,c]) => ({
           ts, open:o, high:h, low:l, close:c,
           date: new Date(ts).toLocaleDateString('es-CO',{month:'short',day:'numeric'})
         })))
@@ -150,38 +143,47 @@ export function useOHLC(coinId, days = 7) {
   return { candles, loading }
 }
 
-// ── Historial 7d (para sparklines en overview si se necesita) ─
-export function useCoinHistory(coinId, days = 7) {
-  const [history, setHistory] = useState([])
+// ── Análisis técnico con indicadores ─────────────────────────
+export function useAnalysis(coinId) {
+  const [signal, setSignal]   = useState(null)
+  const [prices, setPrices2]  = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState(null)
+
   useEffect(() => {
-    if (!coinId) return
-    fetchCoinHistory(coinId, days)
-      .then(d => {
-        const labels = days === 7 ? ['Lun','Mar','Mié','Jue','Vie','Sáb','Hoy'] : []
-        setHistory(d.prices.slice(-days).map((p,i) => ({ day: labels[i]||`D${i+1}`, value: p[1] })))
-      }).catch(() => setHistory([]))
-  }, [coinId, days])
-  return { history }
+    if (!coinId) { setSignal(null); setPrices2([]); return }
+    setLoading(true); setError(null); setSignal(null)
+    // Traemos 90 días de histórico para tener suficientes datos
+    fetchPriceHistory(coinId, 90)
+      .then(data => {
+        const ps = data.prices.map(([,p]) => p)
+        setPrices2(ps)
+        const sig = generateSignal(ps)
+        setSignal(sig)
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [coinId])
+
+  return { signal, prices, loading, error }
 }
 
-// ── Watchlist ─────────────────────────────────────────────────
 export function useWatchlist() {
   const [watchlist, setWatchlist] = useState(() => {
-    try { const s = localStorage.getItem('defi_wl_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
+    try { const s=localStorage.getItem('defi_wl_v5'); return s?JSON.parse(s):[] } catch { return [] }
   })
   const [extraCoins, setExtraCoins] = useState(() => {
-    try { const s = localStorage.getItem('defi_extra_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
+    try { const s=localStorage.getItem('defi_extra_v5'); return s?JSON.parse(s):[] } catch { return [] }
   })
   const saveWL    = l => { setWatchlist(l);   try { localStorage.setItem('defi_wl_v5',    JSON.stringify(l)) } catch {} }
   const saveExtra = c => { setExtraCoins(c);  try { localStorage.setItem('defi_extra_v5', JSON.stringify(c)) } catch {} }
-  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist, id]); if (data && !extraCoins.find(c=>c.id===id)) saveExtra([...extraCoins, data]) }
-  const remove = (id) => { saveWL(watchlist.filter(w=>w!==id)); saveExtra(extraCoins.filter(c=>c.id!==id)) }
+  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist,id]); if (data&&!extraCoins.find(c=>c.id===id)) saveExtra([...extraCoins,data]) }
+  const remove = id => { saveWL(watchlist.filter(w=>w!==id)); saveExtra(extraCoins.filter(c=>c.id!==id)) }
   const toggle = (id, data) => watchlist.includes(id) ? remove(id) : add(id, data)
   const clear  = () => { saveWL([]); saveExtra([]) }
   return { watchlist, extraCoins, toggle, clear }
 }
 
-// ── Zerion Wallet ─────────────────────────────────────────────
 export function useWallet(address) {
   const [portfolio,    setPortfolio]    = useState(null)
   const [positions,    setPositions]    = useState([])
