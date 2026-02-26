@@ -1,6 +1,6 @@
-// /api/zerion.js — Vercel Serverless Function
-// Proxy server-side para Zerion API — resuelve CORS
-// Ruta: coloca este archivo en /api/zerion.js (raíz del proyecto)
+// /api/zerion.js — Vercel Serverless Function (proxy)
+// Coloca en: /api/zerion.js (raíz del proyecto, carpeta api/)
+// Resuelve CORS: Browser → este proxy → Zerion API
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -11,30 +11,25 @@ export default async function handler(req, res) {
   const { path, ...params } = req.query
   if (!path) return res.status(400).json({ error: 'Missing path' })
 
-  const ZERION_KEY = process.env.VITE_ZERION_API_KEY
-  if (!ZERION_KEY) {
-    return res.status(500).json({ error: 'VITE_ZERION_API_KEY not set in environment variables' })
-  }
+  const KEY = process.env.VITE_ZERION_API_KEY
+  if (!KEY)  return res.status(500).json({ error: 'VITE_ZERION_API_KEY not set' })
 
   const qs  = Object.keys(params).length ? '?' + new URLSearchParams(params).toString() : ''
   const url = `https://api.zerion.io/v1/${path}${qs}`
 
   try {
-    const upstream = await fetch(url, {
+    const r = await fetch(url, {
       headers: {
-        'accept':        'application/json',
-        'authorization': `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}`,
+        'accept': 'application/json',
+        'authorization': `Basic ${Buffer.from(KEY + ':').toString('base64')}`,
       },
     })
-
-    if (!upstream.ok) {
-      const txt = await upstream.text()
-      return res.status(upstream.status).json({ error: `Zerion ${upstream.status}: ${txt.slice(0, 200)}` })
+    if (!r.ok) {
+      const txt = await r.text()
+      return res.status(r.status).json({ error: `Zerion ${r.status}: ${txt.slice(0,200)}` })
     }
-
-    const data = await upstream.json()
-    return res.status(200).json(data)
-  } catch (err) {
-    return res.status(500).json({ error: `Proxy fetch error: ${err.message}` })
+    return res.status(200).json(await r.json())
+  } catch (e) {
+    return res.status(500).json({ error: `Proxy error: ${e.message}` })
   }
 }

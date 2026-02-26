@@ -19,6 +19,38 @@ const CG_TO_BINANCE = {
   'render-token':'renderusdt','chiliz':'chzusdt',
 }
 
+// Colores por chain para mostrar badges distintivos
+export const CHAIN_COLORS = {
+  ethereum:  '#627EEA',
+  polygon:   '#8247E5',
+  arbitrum:  '#28A0F0',
+  optimism:  '#FF0420',
+  base:      '#0052FF',
+  avalanche: '#E84142',
+  bsc:       '#F3BA2F',
+  solana:    '#9945FF',
+  fantom:    '#1969FF',
+  gnosis:    '#04795B',
+  zksync:    '#8B8DFC',
+  linea:     '#61DFFF',
+}
+
+export const CHAIN_NAMES = {
+  ethereum:  'ETH',
+  polygon:   'MATIC',
+  arbitrum:  'ARB',
+  optimism:  'OP',
+  base:      'BASE',
+  avalanche: 'AVAX',
+  bsc:       'BSC',
+  solana:    'SOL',
+  fantom:    'FTM',
+  gnosis:    'GNO',
+  zksync:    'zkSync',
+  linea:     'Linea',
+}
+
+// ── Precios + WebSocket ───────────────────────────────────────
 export function usePrices() {
   const [prices, setPrices]         = useState([])
   const [loading, setLoading]       = useState(true)
@@ -54,7 +86,9 @@ export function usePrices() {
         const cgId = Object.entries(CG_TO_BINANCE).find(([, v]) => v === p.s.toLowerCase())?.[0]
         if (!cgId) return
         pricesRef.current = pricesRef.current.map(c =>
-          c.id === cgId ? { ...c, current_price: parseFloat(p.c), price_change_percentage_24h: parseFloat(p.P) } : c
+          c.id === cgId
+            ? { ...c, current_price: parseFloat(p.c), price_change_percentage_24h: parseFloat(p.P) }
+            : c
         )
         setPrices([...pricesRef.current])
         setLastUpdate(new Date())
@@ -71,8 +105,9 @@ export function usePrices() {
   return { prices, loading, lastUpdate, wsStatus }
 }
 
+// ── Búsqueda global ───────────────────────────────────────────
 export function useGlobalSearch(query, localPrices) {
-  const [results, setResults]     = useState([])
+  const [results,   setResults]   = useState([])
   const [searching, setSearching] = useState(false)
   const timerRef = useRef(null)
   const localRef = useRef(localPrices)
@@ -138,19 +173,21 @@ export function useOHLC(coinId, days = 7) {
   return { candles, loading }
 }
 
+// ── Análisis técnico — ahora con volúmenes ────────────────────
 export function useAnalysis(coinId) {
-  const [signal, setSignal]   = useState(null)
+  const [signal,  setSignal]  = useState(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState(null)
+  const [error,   setError]   = useState(null)
 
   useEffect(() => {
     if (!coinId) { setSignal(null); return }
     setLoading(true); setError(null); setSignal(null)
     fetchPriceHistory(coinId, 90)
       .then(data => {
-        const ps  = data.prices.map(([, p]) => p)
-        const sig = generateSignal(ps)
-        setSignal(sig)
+        const prices  = data.prices.map(([, p]) => p)
+        const volumes = data.total_volumes?.map(([, v]) => v) || null
+        // Pasa volúmenes al generador de señales
+        setSignal(generateSignal(prices, volumes, null))
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
@@ -168,61 +205,69 @@ export function useWatchlist() {
   })
   const saveWL    = l => { setWatchlist(l);  try { localStorage.setItem('defi_wl_v5',    JSON.stringify(l)) } catch {} }
   const saveExtra = c => { setExtraCoins(c); try { localStorage.setItem('defi_extra_v5', JSON.stringify(c)) } catch {} }
-  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist, id]); if (data && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, data]) }
+  const add    = (id, data) => {
+    if (!watchlist.includes(id)) saveWL([...watchlist, id])
+    if (data && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, data])
+  }
   const remove = id => { saveWL(watchlist.filter(w => w !== id)); saveExtra(extraCoins.filter(c => c.id !== id)) }
   const toggle = (id, data) => watchlist.includes(id) ? remove(id) : add(id, data)
   const clear  = () => { saveWL([]); saveExtra([]) }
   return { watchlist, extraCoins, toggle, clear }
 }
 
-// ── Zerion — extrae los valores correctos de la respuesta ─────
+// ── Zerion: parser mejorado para chains ──────────────────────
+// La respuesta de Zerion tiene:
+// pos.relationships.chain.data.id → el chain ID correcto
+// pos.attributes → datos del token
 function parsePortfolio(raw) {
-  // Zerion devuelve: { data: { attributes: { total: { value, positions_distribution_by_type } } } }
   const attr = raw?.data?.attributes
   if (!attr) return null
-
-  const total = attr.total?.value
-    ?? attr.total_usd_value   // fallback nombre antiguo
-    ?? attr.positions_distribution_by_type?.wallet  // fallback
-    ?? 0
-
+  const total = attr.total?.value ?? attr.total_usd_value ?? 0
   return {
-    totalValue: total,
-    chains: attr.positions_distribution_by_chain || {},
+    totalValue:   total,
+    chains:       attr.positions_distribution_by_chain || {},
     distribution: attr.positions_distribution_by_type || {},
-    pnl24h: attr.changes?.percent_1d ?? null,
-    pnlAbs24h: attr.changes?.absolute_1d?.value ?? null,
-    updatedAt: attr.updated_at || null,
+    pnl24h:       attr.changes?.percent_1d ?? null,
+    pnlAbs24h:    attr.changes?.absolute_1d?.value ?? null,
   }
 }
 
 function parsePositions(raw) {
   return (raw?.data || []).map(pos => {
-    const a   = pos.attributes
-    const tk  = a?.fungible_info
-    const qty = a?.quantity?.float ?? 0
+    const a     = pos.attributes
+    const tk    = a?.fungible_info
+    const qty   = a?.quantity?.float ?? 0
     const price = a?.price ?? 0
     const value = a?.value ?? (qty * price)
+
+    // ← AQUÍ está el fix del chain:
+    // Zerion mete el chain en relationships, NO en attributes
+    const chainId = pos.relationships?.chain?.data?.id
+      ?? a?.chain        // fallback antiguo
+      ?? 'ethereum'
+
     return {
-      id:      pos.id,
-      symbol:  tk?.symbol || '?',
-      name:    tk?.name || '',
-      icon:    tk?.icon?.url || null,
-      chain:   a?.chain || 'ethereum',
+      id:     pos.id,
+      symbol: tk?.symbol || '?',
+      name:   tk?.name   || '',
+      icon:   tk?.icon?.url || null,
+      chain:  chainId,
       qty, price, value,
-      pct1d:   a?.changes?.percent_1d ?? null,
+      pct1d:  a?.changes?.percent_1d ?? null,
     }
-  }).sort((a, b) => b.value - a.value)
+  }).filter(p => p.value > 0.01)
+    .sort((a, b) => b.value - a.value)
 }
 
 function parseTransactions(raw) {
   return (raw?.data || []).map(tx => {
-    const a = tx.attributes
+    const a      = tx.attributes
+    const chainId = tx.relationships?.chain?.data?.id ?? a?.chain ?? 'ethereum'
     return {
       id:     tx.id,
       type:   a?.operation_type || 'transfer',
       status: a?.status || 'confirmed',
-      chain:  a?.chain || 'ethereum',
+      chain:  chainId,
       time:   a?.mined_at || a?.sent_at || null,
       value:  a?.transfers?.reduce((s, t) => s + (t.value ?? 0), 0) ?? 0,
       fee:    a?.fee?.value ?? null,
@@ -247,8 +292,14 @@ export function useWallet(address) {
         fetchZerionPositions(addr),
         fetchZerionTransactions(addr),
       ])
-      setPortfolio(parsePortfolio(portRaw))
-      setPositions(parsePositions(posRaw))
+      const parsedPort = parsePortfolio(portRaw)
+      const parsedPos  = parsePositions(posRaw)
+      // Si portfolio.totalValue es 0, suma desde posiciones
+      if (parsedPort && (!parsedPort.totalValue || parsedPort.totalValue === 0)) {
+        parsedPort.totalValue = parsedPos.reduce((s, p) => s + p.value, 0)
+      }
+      setPortfolio(parsedPort)
+      setPositions(parsedPos)
       setTransactions(parseTransactions(txRaw))
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
