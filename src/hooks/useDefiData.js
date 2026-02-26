@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   fetchCoinGeckoPrices, fetchGlobalStats, fetchFearGreed,
-  fetchOHLC, fetchPriceHistory,
-  searchCoins, fetchCoinsByIds,
+  fetchOHLC, fetchPriceHistory, searchCoins, fetchCoinsByIds,
   fetchZerionPortfolio, fetchZerionPositions, fetchZerionTransactions,
 } from '../services/api.js'
 import { generateSignal } from '../utils/indicators.js'
@@ -31,16 +30,18 @@ export function usePrices() {
   const loadBase = useCallback(async () => {
     try {
       const data = await fetchCoinGeckoPrices()
-      pricesRef.current = data
-      setPrices(data)
-      setLastUpdate(new Date())
+      if (data.length > 0) {
+        pricesRef.current = data
+        setPrices(data)
+        setLastUpdate(new Date())
+      }
     } catch {}
     finally { setLoading(false) }
   }, [])
 
   const connectWS = useCallback(() => {
     if (wsRef.current) wsRef.current.close()
-    const streams = Object.values(CG_TO_BINANCE).filter(Boolean).map(s=>`${s}@ticker`).join('/')
+    const streams = Object.values(CG_TO_BINANCE).filter(Boolean).map(s => `${s}@ticker`).join('/')
     const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`)
     wsRef.current = ws
     ws.onopen  = () => setWsStatus('live')
@@ -50,7 +51,7 @@ export function usePrices() {
       try {
         const { data: p } = JSON.parse(evt.data)
         if (!p?.s) return
-        const cgId = Object.entries(CG_TO_BINANCE).find(([,v])=>v===p.s.toLowerCase())?.[0]
+        const cgId = Object.entries(CG_TO_BINANCE).find(([, v]) => v === p.s.toLowerCase())?.[0]
         if (!cgId) return
         pricesRef.current = pricesRef.current.map(c =>
           c.id === cgId ? { ...c, current_price: parseFloat(p.c), price_change_percentage_24h: parseFloat(p.P) } : c
@@ -70,7 +71,6 @@ export function usePrices() {
   return { prices, loading, lastUpdate, wsStatus }
 }
 
-// ── Búsqueda global ───────────────────────────────────────────
 export function useGlobalSearch(query, localPrices) {
   const [results, setResults]     = useState([])
   const [searching, setSearching] = useState(false)
@@ -89,10 +89,10 @@ export function useGlobalSearch(query, localPrices) {
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(async () => {
       try {
-        const found    = await searchCoins(query)
-        const localSet = new Set(localRef.current.map(p=>p.id))
-        const newIds   = found.filter(c=>!localSet.has(c.id)).map(c=>c.id)
-        const extra    = newIds.length > 0 ? await fetchCoinsByIds(newIds) : []
+        const found  = await searchCoins(query)
+        const ids    = new Set(localRef.current.map(p => p.id))
+        const newIds = found.filter(c => !ids.has(c.id)).map(c => c.id)
+        const extra  = newIds.length > 0 ? await fetchCoinsByIds(newIds) : []
         setResults([...local, ...extra])
       } catch { setResults(local) }
       finally { setSearching(false) }
@@ -106,7 +106,7 @@ export function useGlobalSearch(query, localPrices) {
 export function useGlobalStats() {
   const [stats, setStats] = useState(null)
   useEffect(() => {
-    fetchGlobalStats().then(d=>setStats(d.data)).catch(()=>setStats(null))
+    fetchGlobalStats().then(d => setStats(d.data)).catch(() => setStats(null))
   }, [])
   return { stats }
 }
@@ -114,50 +114,41 @@ export function useGlobalStats() {
 export function useFearGreed() {
   const [fearGreed, setFearGreed] = useState(null)
   useEffect(() => {
-    fetchFearGreed().then(setFearGreed).catch(()=>setFearGreed(null))
-    const iv = setInterval(() => fetchFearGreed().then(setFearGreed).catch(()=>{}), 3600000)
+    fetchFearGreed().then(setFearGreed).catch(() => {})
+    const iv = setInterval(() => fetchFearGreed().then(setFearGreed).catch(() => {}), 3600000)
     return () => clearInterval(iv)
   }, [])
   return { fearGreed }
 }
 
-// ── OHLC para gráfico de velas ────────────────────────────────
 export function useOHLC(coinId, days = 7) {
   const [candles, setCandles] = useState([])
   const [loading, setLoading] = useState(false)
-
   useEffect(() => {
     if (!coinId) { setCandles([]); return }
     setLoading(true)
     fetchOHLC(coinId, days)
-      .then(raw => {
-        setCandles(raw.map(([ts,o,h,l,c]) => ({
-          ts, open:o, high:h, low:l, close:c,
-          date: new Date(ts).toLocaleDateString('es-CO',{month:'short',day:'numeric'})
-        })))
-      })
+      .then(raw => setCandles(raw.map(([ts, o, h, l, c]) => ({
+        ts, open: o, high: h, low: l, close: c,
+        date: new Date(ts).toLocaleDateString('es-CO', { month: 'short', day: 'numeric' })
+      }))))
       .catch(() => setCandles([]))
       .finally(() => setLoading(false))
   }, [coinId, days])
-
   return { candles, loading }
 }
 
-// ── Análisis técnico con indicadores ─────────────────────────
 export function useAnalysis(coinId) {
   const [signal, setSignal]   = useState(null)
-  const [prices, setPrices2]  = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState(null)
 
   useEffect(() => {
-    if (!coinId) { setSignal(null); setPrices2([]); return }
+    if (!coinId) { setSignal(null); return }
     setLoading(true); setError(null); setSignal(null)
-    // Traemos 90 días de histórico para tener suficientes datos
     fetchPriceHistory(coinId, 90)
       .then(data => {
-        const ps = data.prices.map(([,p]) => p)
-        setPrices2(ps)
+        const ps  = data.prices.map(([, p]) => p)
         const sig = generateSignal(ps)
         setSignal(sig)
       })
@@ -165,23 +156,79 @@ export function useAnalysis(coinId) {
       .finally(() => setLoading(false))
   }, [coinId])
 
-  return { signal, prices, loading, error }
+  return { signal, loading, error }
 }
 
 export function useWatchlist() {
   const [watchlist, setWatchlist] = useState(() => {
-    try { const s=localStorage.getItem('defi_wl_v5'); return s?JSON.parse(s):[] } catch { return [] }
+    try { const s = localStorage.getItem('defi_wl_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
   })
   const [extraCoins, setExtraCoins] = useState(() => {
-    try { const s=localStorage.getItem('defi_extra_v5'); return s?JSON.parse(s):[] } catch { return [] }
+    try { const s = localStorage.getItem('defi_extra_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
   })
-  const saveWL    = l => { setWatchlist(l);   try { localStorage.setItem('defi_wl_v5',    JSON.stringify(l)) } catch {} }
-  const saveExtra = c => { setExtraCoins(c);  try { localStorage.setItem('defi_extra_v5', JSON.stringify(c)) } catch {} }
-  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist,id]); if (data&&!extraCoins.find(c=>c.id===id)) saveExtra([...extraCoins,data]) }
-  const remove = id => { saveWL(watchlist.filter(w=>w!==id)); saveExtra(extraCoins.filter(c=>c.id!==id)) }
+  const saveWL    = l => { setWatchlist(l);  try { localStorage.setItem('defi_wl_v5',    JSON.stringify(l)) } catch {} }
+  const saveExtra = c => { setExtraCoins(c); try { localStorage.setItem('defi_extra_v5', JSON.stringify(c)) } catch {} }
+  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist, id]); if (data && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, data]) }
+  const remove = id => { saveWL(watchlist.filter(w => w !== id)); saveExtra(extraCoins.filter(c => c.id !== id)) }
   const toggle = (id, data) => watchlist.includes(id) ? remove(id) : add(id, data)
   const clear  = () => { saveWL([]); saveExtra([]) }
   return { watchlist, extraCoins, toggle, clear }
+}
+
+// ── Zerion — extrae los valores correctos de la respuesta ─────
+function parsePortfolio(raw) {
+  // Zerion devuelve: { data: { attributes: { total: { value, positions_distribution_by_type } } } }
+  const attr = raw?.data?.attributes
+  if (!attr) return null
+
+  const total = attr.total?.value
+    ?? attr.total_usd_value   // fallback nombre antiguo
+    ?? attr.positions_distribution_by_type?.wallet  // fallback
+    ?? 0
+
+  return {
+    totalValue: total,
+    chains: attr.positions_distribution_by_chain || {},
+    distribution: attr.positions_distribution_by_type || {},
+    pnl24h: attr.changes?.percent_1d ?? null,
+    pnlAbs24h: attr.changes?.absolute_1d?.value ?? null,
+    updatedAt: attr.updated_at || null,
+  }
+}
+
+function parsePositions(raw) {
+  return (raw?.data || []).map(pos => {
+    const a   = pos.attributes
+    const tk  = a?.fungible_info
+    const qty = a?.quantity?.float ?? 0
+    const price = a?.price ?? 0
+    const value = a?.value ?? (qty * price)
+    return {
+      id:      pos.id,
+      symbol:  tk?.symbol || '?',
+      name:    tk?.name || '',
+      icon:    tk?.icon?.url || null,
+      chain:   a?.chain || 'ethereum',
+      qty, price, value,
+      pct1d:   a?.changes?.percent_1d ?? null,
+    }
+  }).sort((a, b) => b.value - a.value)
+}
+
+function parseTransactions(raw) {
+  return (raw?.data || []).map(tx => {
+    const a = tx.attributes
+    return {
+      id:     tx.id,
+      type:   a?.operation_type || 'transfer',
+      status: a?.status || 'confirmed',
+      chain:  a?.chain || 'ethereum',
+      time:   a?.mined_at || a?.sent_at || null,
+      value:  a?.transfers?.reduce((s, t) => s + (t.value ?? 0), 0) ?? 0,
+      fee:    a?.fee?.value ?? null,
+      hash:   a?.hash || null,
+    }
+  })
 }
 
 export function useWallet(address) {
@@ -195,14 +242,14 @@ export function useWallet(address) {
     if (!addr || !addr.startsWith('0x')) return
     setLoading(true); setError(null)
     try {
-      const [port, pos, txs] = await Promise.all([
+      const [portRaw, posRaw, txRaw] = await Promise.all([
         fetchZerionPortfolio(addr),
         fetchZerionPositions(addr),
         fetchZerionTransactions(addr),
       ])
-      setPortfolio(port?.data?.attributes || null)
-      setPositions(pos?.data || [])
-      setTransactions(txs?.data || [])
+      setPortfolio(parsePortfolio(portRaw))
+      setPositions(parsePositions(posRaw))
+      setTransactions(parseTransactions(txRaw))
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [])

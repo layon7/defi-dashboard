@@ -1,52 +1,78 @@
 const CG = 'https://api.coingecko.com/api/v3'
 
+// Fetch con reintentos automáticos (resuelve "Failed to fetch" por rate limit)
+async function fetchWithRetry(url, options = {}, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(url, options)
+      if (res.status === 429) {
+        // Rate limited — espera y reintenta
+        await new Promise(r => setTimeout(r, delay * (i + 1) * 2))
+        continue
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res
+    } catch (e) {
+      if (i === retries - 1) throw e
+      await new Promise(r => setTimeout(r, delay * (i + 1)))
+    }
+  }
+}
+
+// Top 500 — páginas en serie (no paralelas) para no golpear el rate limit
 export async function fetchCoinGeckoPrices() {
-  const results = await Promise.all(
-    [1,2,3,4,5].map(page =>
-      fetch(`${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=${page}&sparkline=false&price_change_percentage=24h`)
-        .then(r => r.ok ? r.json() : []).catch(() => [])
-    )
-  )
-  return results.flat()
+  const all = []
+  for (const page of [1, 2, 3, 4, 5]) {
+    try {
+      const res = await fetchWithRetry(
+        `${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=${page}&sparkline=false&price_change_percentage=24h`
+      )
+      const data = await res.json()
+      all.push(...data)
+      // Pequeña pausa entre páginas
+      if (page < 5) await new Promise(r => setTimeout(r, 300))
+    } catch { /* continúa con las páginas que sí cargaron */ }
+  }
+  return all
 }
 
 export async function searchCoins(query) {
   if (!query || query.length < 2) return []
   try {
-    const res = await fetch(`${CG}/search?query=${encodeURIComponent(query)}`)
-    return res.ok ? (await res.json()).coins?.slice(0,12)||[] : []
+    const res = await fetchWithRetry(`${CG}/search?query=${encodeURIComponent(query)}`)
+    return (await res.json()).coins?.slice(0, 12) || []
   } catch { return [] }
 }
 
 export async function fetchCoinsByIds(ids) {
   if (!ids?.length) return []
   try {
-    const res = await fetch(`${CG}/coins/markets?vs_currency=usd&ids=${ids.join(',')}&sparkline=false&price_change_percentage=24h`)
-    return res.ok ? res.json() : []
+    const res = await fetchWithRetry(
+      `${CG}/coins/markets?vs_currency=usd&ids=${ids.join(',')}&sparkline=false&price_change_percentage=24h`
+    )
+    return res.json()
   } catch { return [] }
 }
 
 export async function fetchGlobalStats() {
-  const res = await fetch(`${CG}/global`)
-  if (!res.ok) throw new Error('CoinGecko global error')
+  const res = await fetchWithRetry(`${CG}/global`)
   return res.json()
 }
 
-// OHLC para velas — usa market_chart con interval hourly para más datos
+// OHLC para velas — devuelve [[ts, open, high, low, close], ...]
 export async function fetchOHLC(coinId, days = 7) {
-  // CoinGecko OHLC endpoint
-  const res = await fetch(`${CG}/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`)
-  if (!res.ok) throw new Error(`OHLC error ${res.status}`)
+  const res = await fetchWithRetry(`${CG}/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`)
   const raw = await res.json()
-  // raw = [[ts, open, high, low, close], ...]
-  if (!Array.isArray(raw) || raw.length === 0) throw new Error('No OHLC data')
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error('Sin datos OHLC')
   return raw
 }
 
-// Precios históricos para calcular indicadores técnicos (RSI, MACD, etc.)
+// Historial de precios para indicadores técnicos
+// days=90 da ~90 puntos diarios — suficiente para RSI(14), MACD(26), EMA(50)
 export async function fetchPriceHistory(coinId, days = 90) {
-  const res = await fetch(`${CG}/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=daily`)
-  if (!res.ok) throw new Error(`History error ${res.status}`)
+  const res = await fetchWithRetry(
+    `${CG}/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=daily`
+  )
   return res.json()
 }
 
@@ -57,18 +83,16 @@ export async function fetchFearGreed() {
   } catch { return null }
 }
 
-// ── Zerion — llamadas a través del proxy /api/zerion ──────────
-// El proxy en /api/zerion.js reenvía a Zerion server-side (sin CORS)
-// NUNCA llamamos a api.zerion.io directamente desde el browser
-
+// ── Zerion — proxy server-side en /api/zerion.js ──────────────
+// NUNCA se llama a api.zerion.io directo desde el browser (CORS)
 export const hasZerionKey = () => Boolean(import.meta.env.VITE_ZERION_API_KEY)
 
-function zerionProxy(path, params = {}) {
-  const qs = new URLSearchParams({ path, ...params }).toString()
-  return fetch(`/api/zerion?${qs}`).then(r => {
-    if (!r.ok) return r.json().then(e => { throw new Error(e.error || `HTTP ${r.status}`) })
-    return r.json()
-  })
+async function zerionProxy(path, params = {}) {
+  const qs  = new URLSearchParams({ path, ...params }).toString()
+  const res = await fetchWithRetry(`/api/zerion?${qs}`)
+  const data = await res.json()
+  if (data.error) throw new Error(data.error)
+  return data
 }
 
 export async function fetchZerionPortfolio(address) {
@@ -79,7 +103,7 @@ export async function fetchZerionPositions(address) {
   return zerionProxy(`wallets/${address}/positions/`, {
     'filter[position_types]': 'wallet',
     currency: 'usd',
-    'sort': '-value',
+    sort: '-value',
     'page[size]': '100',
   })
 }
