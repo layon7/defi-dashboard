@@ -19,42 +19,21 @@ const CG_TO_BINANCE = {
   'render-token':'renderusdt','chiliz':'chzusdt',
 }
 
-// Colores por chain para mostrar badges distintivos
 export const CHAIN_COLORS = {
-  ethereum:  '#627EEA',
-  polygon:   '#8247E5',
-  arbitrum:  '#28A0F0',
-  optimism:  '#FF0420',
-  base:      '#0052FF',
-  avalanche: '#E84142',
-  bsc:       '#F3BA2F',
-  solana:    '#9945FF',
-  fantom:    '#1969FF',
-  gnosis:    '#04795B',
-  zksync:    '#8B8DFC',
-  linea:     '#61DFFF',
+  ethereum:'#627EEA', polygon:'#8247E5', arbitrum:'#28A0F0',
+  optimism:'#FF0420', base:'#0052FF',    avalanche:'#E84142',
+  bsc:'#F3BA2F',      solana:'#9945FF',  fantom:'#1969FF',
+  gnosis:'#04795B',   zksync:'#8B8DFC',  linea:'#61DFFF',
 }
-
 export const CHAIN_NAMES = {
-  ethereum:  'ETH',
-  polygon:   'MATIC',
-  arbitrum:  'ARB',
-  optimism:  'OP',
-  base:      'BASE',
-  avalanche: 'AVAX',
-  bsc:       'BSC',
-  solana:    'SOL',
-  fantom:    'FTM',
-  gnosis:    'GNO',
-  zksync:    'zkSync',
-  linea:     'Linea',
+  ethereum:'ETH', polygon:'MATIC', arbitrum:'ARB', optimism:'OP',
+  base:'BASE',    avalanche:'AVAX', bsc:'BSC',     solana:'SOL',
+  fantom:'FTM',   gnosis:'GNO',    zksync:'zkSync', linea:'Linea',
 }
 
-// ── Precios + WebSocket ───────────────────────────────────────
 export function usePrices() {
   const [prices, setPrices]         = useState([])
   const [loading, setLoading]       = useState(true)
-  const [lastUpdate, setLastUpdate] = useState(null)
   const [wsStatus, setWsStatus]     = useState('connecting')
   const wsRef     = useRef(null)
   const pricesRef = useRef([])
@@ -62,11 +41,7 @@ export function usePrices() {
   const loadBase = useCallback(async () => {
     try {
       const data = await fetchCoinGeckoPrices()
-      if (data.length > 0) {
-        pricesRef.current = data
-        setPrices(data)
-        setLastUpdate(new Date())
-      }
+      if (data.length > 0) { pricesRef.current = data; setPrices(data) }
     } catch {}
     finally { setLoading(false) }
   }, [])
@@ -86,12 +61,9 @@ export function usePrices() {
         const cgId = Object.entries(CG_TO_BINANCE).find(([, v]) => v === p.s.toLowerCase())?.[0]
         if (!cgId) return
         pricesRef.current = pricesRef.current.map(c =>
-          c.id === cgId
-            ? { ...c, current_price: parseFloat(p.c), price_change_percentage_24h: parseFloat(p.P) }
-            : c
+          c.id === cgId ? { ...c, current_price: parseFloat(p.c), price_change_percentage_24h: parseFloat(p.P) } : c
         )
         setPrices([...pricesRef.current])
-        setLastUpdate(new Date())
       } catch {}
     }
   }, [])
@@ -102,12 +74,11 @@ export function usePrices() {
     return () => { clearInterval(iv); wsRef.current?.close() }
   }, [loadBase, connectWS])
 
-  return { prices, loading, lastUpdate, wsStatus }
+  return { prices, loading, wsStatus }
 }
 
-// ── Búsqueda global ───────────────────────────────────────────
 export function useGlobalSearch(query, localPrices) {
-  const [results,   setResults]   = useState([])
+  const [results, setResults]     = useState([])
   const [searching, setSearching] = useState(false)
   const timerRef = useRef(null)
   const localRef = useRef(localPrices)
@@ -127,7 +98,7 @@ export function useGlobalSearch(query, localPrices) {
         const found  = await searchCoins(query)
         const ids    = new Set(localRef.current.map(p => p.id))
         const newIds = found.filter(c => !ids.has(c.id)).map(c => c.id)
-        const extra  = newIds.length > 0 ? await fetchCoinsByIds(newIds) : []
+        const extra  = newIds.length ? await fetchCoinsByIds(newIds) : []
         setResults([...local, ...extra])
       } catch { setResults(local) }
       finally { setSearching(false) }
@@ -141,7 +112,7 @@ export function useGlobalSearch(query, localPrices) {
 export function useGlobalStats() {
   const [stats, setStats] = useState(null)
   useEffect(() => {
-    fetchGlobalStats().then(d => setStats(d.data)).catch(() => setStats(null))
+    fetchGlobalStats().then(d => setStats(d.data)).catch(() => {})
   }, [])
   return { stats }
 }
@@ -173,62 +144,56 @@ export function useOHLC(coinId, days = 7) {
   return { candles, loading }
 }
 
-// ── Análisis técnico — ahora con volúmenes ────────────────────
+// ── useAnalysis: devuelve también coinData para mostrar precio
+//    de cualquier moneda (incluso fuera del top 500) ───────────
 export function useAnalysis(coinId) {
-  const [signal,  setSignal]  = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error,   setError]   = useState(null)
+  const [signal,   setSignal]   = useState(null)
+  const [coinData, setCoinData] = useState(null)   // ← precio+nombre de la moneda analizada
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState(null)
 
   useEffect(() => {
-    if (!coinId) { setSignal(null); return }
+    if (!coinId) { setSignal(null); setCoinData(null); return }
     setLoading(true); setError(null); setSignal(null)
-    fetchPriceHistory(coinId, 90)
-      .then(data => {
-        const prices  = data.prices.map(([, p]) => p)
-        const volumes = data.total_volumes?.map(([, v]) => v) || null
-        // Pasa volúmenes al generador de señales
-        setSignal(generateSignal(prices, volumes, null))
+
+    // Carga paralela: historial + datos actuales de la moneda
+    Promise.all([
+      fetchPriceHistory(coinId, 90),
+      fetchCoinsByIds([coinId]),   // siempre trae precio actual, cualquier ranking
+    ])
+      .then(([history, coinArr]) => {
+        const prices  = history.prices.map(([, p]) => p)
+        const volumes = history.total_volumes?.map(([, v]) => v) || null
+        setSignal(generateSignal(prices, volumes))
+        if (coinArr && coinArr.length > 0) setCoinData(coinArr[0])
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [coinId])
 
-  return { signal, loading, error }
+  return { signal, coinData, loading, error }
 }
 
 export function useWatchlist() {
-  const [watchlist, setWatchlist] = useState(() => {
-    try { const s = localStorage.getItem('defi_wl_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
-  })
-  const [extraCoins, setExtraCoins] = useState(() => {
-    try { const s = localStorage.getItem('defi_extra_v5'); return s ? JSON.parse(s) : [] } catch { return [] }
-  })
+  const [watchlist,   setWatchlist]   = useState(() => { try { return JSON.parse(localStorage.getItem('defi_wl_v5')||'[]') } catch { return [] } })
+  const [extraCoins,  setExtraCoins]  = useState(() => { try { return JSON.parse(localStorage.getItem('defi_extra_v5')||'[]') } catch { return [] } })
   const saveWL    = l => { setWatchlist(l);  try { localStorage.setItem('defi_wl_v5',    JSON.stringify(l)) } catch {} }
   const saveExtra = c => { setExtraCoins(c); try { localStorage.setItem('defi_extra_v5', JSON.stringify(c)) } catch {} }
-  const add    = (id, data) => {
-    if (!watchlist.includes(id)) saveWL([...watchlist, id])
-    if (data && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, data])
-  }
+  const add    = (id, data) => { if (!watchlist.includes(id)) saveWL([...watchlist, id]); if (data && !extraCoins.find(c => c.id === id)) saveExtra([...extraCoins, data]) }
   const remove = id => { saveWL(watchlist.filter(w => w !== id)); saveExtra(extraCoins.filter(c => c.id !== id)) }
   const toggle = (id, data) => watchlist.includes(id) ? remove(id) : add(id, data)
   const clear  = () => { saveWL([]); saveExtra([]) }
   return { watchlist, extraCoins, toggle, clear }
 }
 
-// ── Zerion: parser mejorado para chains ──────────────────────
-// La respuesta de Zerion tiene:
-// pos.relationships.chain.data.id → el chain ID correcto
-// pos.attributes → datos del token
 function parsePortfolio(raw) {
   const attr = raw?.data?.attributes
   if (!attr) return null
-  const total = attr.total?.value ?? attr.total_usd_value ?? 0
   return {
-    totalValue:   total,
-    chains:       attr.positions_distribution_by_chain || {},
-    distribution: attr.positions_distribution_by_type || {},
-    pnl24h:       attr.changes?.percent_1d ?? null,
-    pnlAbs24h:    attr.changes?.absolute_1d?.value ?? null,
+    totalValue: attr.total?.value ?? attr.total_usd_value ?? 0,
+    chains:     attr.positions_distribution_by_chain || {},
+    pnl24h:     attr.changes?.percent_1d ?? null,
+    pnlAbs24h:  attr.changes?.absolute_1d?.value ?? null,
   }
 }
 
@@ -239,39 +204,23 @@ function parsePositions(raw) {
     const qty   = a?.quantity?.float ?? 0
     const price = a?.price ?? 0
     const value = a?.value ?? (qty * price)
-
-    // ← AQUÍ está el fix del chain:
-    // Zerion mete el chain en relationships, NO en attributes
-    const chainId = pos.relationships?.chain?.data?.id
-      ?? a?.chain        // fallback antiguo
-      ?? 'ethereum'
-
-    return {
-      id:     pos.id,
-      symbol: tk?.symbol || '?',
-      name:   tk?.name   || '',
-      icon:   tk?.icon?.url || null,
-      chain:  chainId,
-      qty, price, value,
-      pct1d:  a?.changes?.percent_1d ?? null,
-    }
-  }).filter(p => p.value > 0.01)
-    .sort((a, b) => b.value - a.value)
+    // chain está en relationships, no en attributes
+    const chain = pos.relationships?.chain?.data?.id ?? a?.chain ?? 'ethereum'
+    return { id: pos.id, symbol: tk?.symbol || '?', name: tk?.name || '', icon: tk?.icon?.url || null, chain, qty, price, value, pct1d: a?.changes?.percent_1d ?? null }
+  }).filter(p => p.value > 0.01).sort((a, b) => b.value - a.value)
 }
 
 function parseTransactions(raw) {
   return (raw?.data || []).map(tx => {
-    const a      = tx.attributes
-    const chainId = tx.relationships?.chain?.data?.id ?? a?.chain ?? 'ethereum'
+    const a = tx.attributes
     return {
       id:     tx.id,
       type:   a?.operation_type || 'transfer',
       status: a?.status || 'confirmed',
-      chain:  chainId,
+      chain:  tx.relationships?.chain?.data?.id ?? a?.chain ?? 'ethereum',
       time:   a?.mined_at || a?.sent_at || null,
       value:  a?.transfers?.reduce((s, t) => s + (t.value ?? 0), 0) ?? 0,
       fee:    a?.fee?.value ?? null,
-      hash:   a?.hash || null,
     }
   })
 }
@@ -292,12 +241,10 @@ export function useWallet(address) {
         fetchZerionPositions(addr),
         fetchZerionTransactions(addr),
       ])
-      const parsedPort = parsePortfolio(portRaw)
       const parsedPos  = parsePositions(posRaw)
-      // Si portfolio.totalValue es 0, suma desde posiciones
-      if (parsedPort && (!parsedPort.totalValue || parsedPort.totalValue === 0)) {
+      const parsedPort = parsePortfolio(portRaw)
+      if (parsedPort && !parsedPort.totalValue)
         parsedPort.totalValue = parsedPos.reduce((s, p) => s + p.value, 0)
-      }
       setPortfolio(parsedPort)
       setPositions(parsedPos)
       setTransactions(parseTransactions(txRaw))
