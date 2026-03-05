@@ -710,39 +710,54 @@ function PricesTab({prices,loading,wsStatus,watchlist,onToggle,onChart,isMobile}
       </div>
       <div style={{marginBottom:10}}><SearchBox value={search} onChange={setSearch} busy={searching} placeholder="Buscar cualquier moneda…"/></div>
       {search&&<div style={{fontSize:11,color:DIM,marginBottom:9}}>{searching?'Buscando…':`${results.length} resultado${results.length!==1?'s':''}`}</div>}
-      {loading?<div style={{textAlign:'center',padding:44,color:DIM}}>Cargando top 100…</div>:visible.length===0&&!searching?<div style={{textAlign:'center',padding:36,color:DIM}}>Sin resultados</div>:isMobile?(
-        visible.map((p,i)=>{const chg=p.price_change_percentage_24h,w=watchlist.includes(p.id);return(
-          <div key={p.id} style={{display:'flex',alignItems:'center',gap:9,padding:'10px 0',borderBottom:'1px solid rgba(255,140,0,.055)',cursor:'pointer'}} onClick={()=>onChart(p)}>
-            <span style={{fontSize:11,color:DIM,minWidth:22}}>{search?(i+1):((page-1)*PER+i+1)}</span>
-            <img src={p.image} alt="" style={{width:26,height:26,borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>
-            <div style={{flex:1}}>
-              <div style={{display:'flex',justifyContent:'space-between'}}><span style={{fontWeight:700,fontSize:13}}>{p.symbol?.toUpperCase()}</span><span style={{fontWeight:700,fontSize:13}}>${(p.current_price??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}</span></div>
-              <div style={{display:'flex',justifyContent:'space-between',marginTop:2}}><span style={{fontSize:10,color:DIM}}>{p.name}</span><span style={{fontSize:12,fontWeight:700,color:pc(chg)}}>{pct(chg)}</span></div>
-            </div>
-            <button onClick={e=>{e.stopPropagation();onToggle(p.id,p)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:20,color:w?G:'rgba(255,255,255,.13)'}}>{w?'★':'☆'}</button>
-          </div>
-        )})
-      ):(
-        <table style={{width:'100%',borderCollapse:'collapse'}}>
-          <thead><tr>{['#','TOKEN','PRECIO','24H','MARKET CAP','VOL 24H','★'].map((h,i)=><th key={i} style={{...thS,textAlign:i>1?'right':'left'}}>{h}</th>)}</tr></thead>
-          <tbody>{visible.map((p,i)=>{const chg=p.price_change_percentage_24h,w=watchlist.includes(p.id);return(
-            <tr key={p.id} style={{cursor:'pointer'}} onClick={()=>onChart(p)}>
-              <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',color:DIM,width:28}}>{search?(i+1):((page-1)*PER+i+1)}</td>
-              <td style={{padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)'}}><div style={{display:'flex',alignItems:'center',gap:8}}><img src={p.image} alt="" style={{width:22,height:22,borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/><div><div style={{fontWeight:700,fontSize:13,color:WHITE}}>{p.symbol?.toUpperCase()}</div><div style={{fontSize:10,color:DIM}}>{p.name}</div></div></div></td>
-              <td style={{fontSize:13,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',fontWeight:700,color:WHITE}}>${(p.current_price??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:6})}</td>
-              <td style={{fontSize:13,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',fontWeight:700,color:pc(chg)}}>{pct(chg)}</td>
-              <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',color:DIM}}>{fmt(p.market_cap)}</td>
-              <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',color:DIM}}>{fmt(p.total_volume)}</td>
-              <td style={{padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'center',width:38}}><button onClick={e=>{e.stopPropagation();onToggle(p.id,p)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:19,color:w?G:'rgba(255,255,255,.13)'}}>{w?'★':'☆'}</button></td>
-            </tr>
-          )}}</tbody>
-        </table>
+      {loading
+        ? <div style={{textAlign:'center',padding:44,color:DIM}}>Cargando top 100…</div>
+        : visible.length===0&&!searching
+          ? <div style={{textAlign:'center',padding:36,color:DIM}}>Sin resultados</div>
+          : isMobile
+            ? visible.map((p,i) => {
+                const chg=p.price_change_percentage_24h, w=watchlist.includes(p.id)
+                return (
+                  <div key={p.id} style={{display:'flex',alignItems:'center',gap:9,padding:'10px 0',borderBottom:'1px solid rgba(255,140,0,.055)',cursor:'pointer'}} onClick={()=>onChart(p)}>
+                    <span style={{fontSize:11,color:DIM,minWidth:22}}>{search?(i+1):((page-1)*PER+i+1)}</span>
+                    <img src={p.image} alt="" style={{width:26,height:26,borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>
+                    <div style={{flex:1}}>
+                      <div style={{display:'flex',justifyContent:'space-between'}}><span style={{fontWeight:700,fontSize:13}}>{p.symbol?.toUpperCase()}</span><span style={{fontWeight:700,fontSize:13}}>${(p.current_price??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}</span></div>
+                      <div style={{display:'flex',justifyContent:'space-between',marginTop:2}}><span style={{fontSize:10,color:DIM}}>{p.name}</span><span style={{fontSize:12,fontWeight:700,color:pc(chg)}}>{pct(chg)}</span></div>
+                    </div>
+                    <button onClick={e=>{e.stopPropagation();onToggle(p.id,p)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:20,color:w?G:'rgba(255,255,255,.13)'}}>{w?'★':'☆'}</button>
+                  </div>
+                )
+              })
+            : (
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr>{['#','TOKEN','PRECIO','24H','MARKET CAP','VOL 24H','★'].map((h,i)=><th key={i} style={{...thS,textAlign:i>1?'right':'left'}}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {visible.map((p,i) => {
+                      const chg=p.price_change_percentage_24h, w=watchlist.includes(p.id)
+                      return (
+                        <tr key={p.id} style={{cursor:'pointer'}} onClick={()=>onChart(p)}>
+                          <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',color:DIM,width:28}}>{search?(i+1):((page-1)*PER+i+1)}</td>
+                          <td style={{padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)'}}><div style={{display:'flex',alignItems:'center',gap:8}}><img src={p.image} alt="" style={{width:22,height:22,borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/><div><div style={{fontWeight:700,fontSize:13,color:WHITE}}>{p.symbol?.toUpperCase()}</div><div style={{fontSize:10,color:DIM}}>{p.name}</div></div></div></td>
+                          <td style={{fontSize:13,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',fontWeight:700,color:WHITE}}>${(p.current_price??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:6})}</td>
+                          <td style={{fontSize:13,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',fontWeight:700,color:pc(chg)}}>{pct(chg)}</td>
+                          <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',color:DIM}}>{fmt(p.market_cap)}</td>
+                          <td style={{fontSize:11,padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'right',color:DIM}}>{fmt(p.total_volume)}</td>
+                          <td style={{padding:'9px 0',borderBottom:'1px solid rgba(255,140,0,.055)',textAlign:'center',width:38}}><button onClick={e=>{e.stopPropagation();onToggle(p.id,p)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:19,color:w?G:'rgba(255,255,255,.13)'}}>{w?'★':'☆'}</button></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )
+      }
+      {!search&&total>1&&(
+        <div style={{display:'flex',justifyContent:'center',gap:5,marginTop:14,flexWrap:'wrap'}}>
+          <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} style={{padding:'5px 11px',background:'rgba(255,140,0,.07)',border:'1px solid rgba(255,140,0,.18)',borderRadius:5,color:page===1?DIM:G,cursor:page===1?'default':'pointer',fontFamily:'inherit',fontSize:11}}>←</button>
+          {Array.from({length:total},(_,i)=>i+1).map(n=><button key={n} onClick={()=>setPage(n)} style={{padding:'5px 9px',background:n===page?'rgba(255,140,0,.18)':'transparent',border:`1px solid ${n===page?'rgba(255,140,0,.45)':'rgba(255,140,0,.1)'}`,borderRadius:5,color:n===page?G:DIM,cursor:'pointer',fontFamily:'inherit',fontSize:11}}>{n}</button>)}
+          <button onClick={()=>setPage(p=>Math.min(total,p+1))} disabled={page===total} style={{padding:'5px 11px',background:'rgba(255,140,0,.07)',border:'1px solid rgba(255,140,0,.18)',borderRadius:5,color:page===total?DIM:G,cursor:page===total?'default':'pointer',fontFamily:'inherit',fontSize:11}}>→</button>
+        </div>
       )}
-      {!search&&total>1&&<div style={{display:'flex',justifyContent:'center',gap:5,marginTop:14,flexWrap:'wrap'}}>
-        <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} style={{padding:'5px 11px',background:'rgba(255,140,0,.07)',border:'1px solid rgba(255,140,0,.18)',borderRadius:5,color:page===1?DIM:G,cursor:page===1?'default':'pointer',fontFamily:'inherit',fontSize:11}}>←</button>
-        {Array.from({length:total},(_,i)=>i+1).map(n=><button key={n} onClick={()=>setPage(n)} style={{padding:'5px 9px',background:n===page?'rgba(255,140,0,.18)':'transparent',border:`1px solid ${n===page?'rgba(255,140,0,.45)':'rgba(255,140,0,.1)'}`,borderRadius:5,color:n===page?G:DIM,cursor:'pointer',fontFamily:'inherit',fontSize:11}}>{n}</button>)}
-        <button onClick={()=>setPage(p=>Math.min(total,p+1))} disabled={page===total} style={{padding:'5px 11px',background:'rgba(255,140,0,.07)',border:'1px solid rgba(255,140,0,.18)',borderRadius:5,color:page===total?DIM:G,cursor:page===total?'default':'pointer',fontFamily:'inherit',fontSize:11}}>→</button>
-      </div>}
     </Card>
   )
 }
