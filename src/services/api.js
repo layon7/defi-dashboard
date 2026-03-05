@@ -1,32 +1,31 @@
-// src/services/api.js — v10.3
-// FIX CRÍTICO: rate limit con CoinGecko
-// - Páginas 3-5 van secuenciales con 600ms entre ellas (no paralelo)
-//   → evita ráfaga de 5+ requests simultáneos que causa 429
-// - Análisis espera 800ms después de que cargan p1+p2 antes de hacer sus fetches
-// - Timeout 8s (era 7s, muy agresivo para conexiones lentas)
-// - Cache de precios sube a 5min (no tiene sentido refrescar más seguido en free tier)
+// src/services/api.js — v10.4
+// CAMBIOS vs v10.3:
+// - Top 500 → Top 100 solamente (1 página, ~0.7s, sin background ni rate limit)
+// - fetchPriceHistory ahora acepta timeframe: '1h' | '4h' | '1d'
+//   CoinGecko: days=1 → intervalos cada 5min | days=14 → cada hora | days=90 → diario
+// - Debounce externo en useAnalysis (cancelación limpia al cambiar moneda)
 
 const CG = 'https://api.coingecko.com/api/v3'
 
 const _c = new Map()
 const cGet = (k, ttl) => { const i = _c.get(k); if (!i || Date.now()-i.ts > ttl) { _c.delete(k); return null } return i.data }
 const cSet = (k, d) => _c.set(k, { data:d, ts:Date.now() })
-const TTL = { prices:300000, history:1800000, global:300000, ohlc:480000, search:900000, byids:180000 }
+const TTL = { prices:300000, history:1800000, hist4h:900000, hist1h:300000, global:300000, ohlc:480000, search:900000, byids:180000 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-function ft(url, ms=8000) {
+function ft(url, ms=9000) {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), ms)
   return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t))
 }
 
-async function fx(url, ms=8000) {
+async function fx(url, ms=9000) {
   for (let i=0; i<2; i++) {
     try {
       const res = await ft(url, ms)
       if (res.status === 429) {
-        if (i===0) { await sleep(3000); continue }   // espera 3s antes de reintentar
-        throw new Error('Rate limit — espera 1 minuto e intenta de nuevo')
+        if (i===0) { await sleep(3000); continue }
+        throw new Error('Rate limit — espera 1 minuto')
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return await res.json()
@@ -41,45 +40,19 @@ async function fx(url, ms=8000) {
   }
 }
 
-// ── Top 500 ───────────────────────────────────────────────────
-// Estrategia: p1+p2 en paralelo → UI visible ~1.5s
-// p3, p4, p5 SECUENCIALES con 700ms entre ellas → no dispara rate limit
+// ── Top 100 — 1 sola página, sin background ───────────────────
+// Antes: 5 páginas (3 en background) → rate limit frecuente
+// Ahora: 1 página → ~0.7s, sin riesgo de 429
 const mktUrl = p => `${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=${p}&sparkline=false&price_change_percentage=24h`
-
-let _bgRunning = false  // evita múltiples background runs simultáneos
 
 export async function fetchCoinGeckoPrices(onPartial) {
   const c = cGet('prices_all', TTL.prices)
   if (c) { onPartial?.(c); return c }
-
-  // p1+p2 en paralelo — solo 2 requests → seguro con free tier
-  const [p1, p2] = await Promise.all([
-    fx(mktUrl(1)),
-    fx(mktUrl(2)).catch(() => []),
-  ])
-  const partial = [...(p1||[]), ...(p2||[])]
-  if (partial.length) onPartial?.(partial)
-
-  // p3-p5 secuenciales en background con pausa — evita rate limit
-  if (!_bgRunning) {
-    _bgRunning = true
-    ;(async () => {
-      try {
-        await sleep(1200)  // espera a que el resto de la app haga sus fetches primero
-        const p3 = await fx(mktUrl(3)).catch(()=>[])
-        await sleep(700)
-        const p4 = await fx(mktUrl(4)).catch(()=>[])
-        await sleep(700)
-        const p5 = await fx(mktUrl(5)).catch(()=>[])
-        const all = [...partial,...p3,...p4,...p5]
-        cSet('prices_all', all)
-        onPartial?.(all)
-      } catch {}
-      finally { _bgRunning = false }
-    })()
-  }
-
-  return partial
+  const data = await fx(mktUrl(1))
+  const result = data || []
+  cSet('prices_all', result)
+  onPartial?.(result)
+  return result
 }
 
 export async function searchCoins(q) {
@@ -118,30 +91,50 @@ export async function fetchOHLC(coinId, days=7) {
   cSet(key,raw); return raw
 }
 
-// ── Historial técnico: activo + BTC ──────────────────────────
-// FIX: si coinId != bitcoin, espera 500ms antes de lanzar el fetch de BTC
-// para no competir con los fetches de precios recién iniciados
-export async function fetchPriceHistory(coinId, days=90) {
-  const kC=`h_${coinId}_${days}`, kB=`h_bitcoin_${days}`
-  const cC=cGet(kC,TTL.history), cB=cGet(kB,TTL.history)
-  if (cC && cB) return { coin:cC, btc:cB }
+// ── Historial multi-timeframe ─────────────────────────────────
+// CoinGecko free tier:
+//   days=2,  sin interval → puntos cada 5min  → usamos como proxy "1H" (últimas 2 días)
+//   days=14, sin interval → puntos cada hora   → proxy "4H" (14 días de velas horarias)
+//   days=90, interval=daily → 1 punto por día  → "1D" (90 días)
+//
+// Para BTC solo lo pedimos en timeframe 1D (referencia de correlación larga)
+// En 1H/4H no tiene sentido correlacionar con BTC
 
-  const url = id => `${CG}/coins/${id}/market_chart?vs_currency=usd&days=${days}&interval=daily`
+const TF_CONFIG = {
+  '1h': { days: 2,  interval: '',       ttlKey: 'hist1h', ttl: 'hist1h'  },
+  '4h': { days: 14, interval: '',       ttlKey: 'hist4h', ttl: 'hist4h'  },
+  '1d': { days: 90, interval: 'daily',  ttlKey: 'history',ttl: 'history' },
+}
 
-  // Si ninguno está en cache, hacemos el del activo primero
-  // y BTC después con un pequeño delay para no saturar
+export async function fetchPriceHistory(coinId, tf='1d') {
+  const cfg = TF_CONFIG[tf] || TF_CONFIG['1d']
+  const kC = `h_${tf}_${coinId}`
+  const kB = `h_1d_bitcoin`
+  const cC = cGet(kC, TTL[cfg.ttl])
+  const cB = tf==='1d' ? cGet(kB, TTL.history) : null
+
+  // Cache hit completo
+  if (cC && (tf!=='1d' || cB)) return { coin:cC, btc:cB||null }
+
+  const ivParam = cfg.interval ? `&interval=${cfg.interval}` : ''
+  const url = id => `${CG}/coins/${id}/market_chart?vs_currency=usd&days=${cfg.days}${ivParam}`
+
+  // Fetch del activo
   const coinData = cC ? cC : await fx(url(coinId))
   if (!coinData?.prices?.length) throw new Error('Sin datos históricos')
   cSet(kC, coinData)
 
-  let btcData = cB
-  if (!btcData && coinId !== 'bitcoin') {
-    await sleep(400)  // pequeña pausa antes del segundo fetch
+  // BTC solo en 1D y si no está en cache
+  let btcData = null
+  if (tf==='1d' && !cB && coinId!=='bitcoin') {
+    await sleep(400)
     btcData = await fx(url('bitcoin')).catch(()=>null)
     if (btcData?.prices?.length) cSet(kB, btcData)
+  } else if (tf==='1d' && cB) {
+    btcData = cB
   }
 
-  return { coin:coinData, btc:btcData||null }
+  return { coin:coinData, btc:btcData }
 }
 
 export async function fetchFearGreed() {
@@ -153,7 +146,6 @@ export async function fetchFearGreed() {
   } catch { return null }
 }
 
-// ── Zerion proxy (sin CORS) ───────────────────────────────────
 export const hasZerionKey = () => Boolean(import.meta.env.VITE_ZERION_API_KEY)
 
 async function zerionProxy(path, params={}) {

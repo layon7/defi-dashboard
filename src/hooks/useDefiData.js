@@ -4,7 +4,7 @@ import {
   fetchOHLC, fetchPriceHistory, searchCoins, fetchCoinsByIds,
   fetchZerionPortfolio, fetchZerionPositions, fetchZerionTransactions,
 } from '../services/api.js'
-import { generateSignal } from '../utils/indicators.js'
+import { generateSignal, generateSignalTF, calcConfluence, detectTrendChange, runBacktest } from '../utils/indicators.js'
 
 const CG_TO_BINANCE = {
   'bitcoin':'btcusdt','ethereum':'ethusdt','binancecoin':'bnbusdt',
@@ -31,9 +31,6 @@ export const CHAIN_NAMES = {
 }
 
 // ── usePrices ─────────────────────────────────────────────────
-// FIX: espera 1.5s antes de conectar el WebSocket
-// para no lanzar la conexión WS mientras aún están cargando
-// los datos iniciales de CoinGecko (evita competencia de red)
 export function usePrices() {
   const [prices,   setPrices]   = useState([])
   const [loading,  setLoading]  = useState(true)
@@ -75,10 +72,7 @@ export function usePrices() {
   }, [])
 
   useEffect(() => {
-    // Primero carga precios, luego conecta WS con delay para no saturar
-    loadBase().then(() => {
-      setTimeout(connectWS, 1500)
-    })
+    loadBase().then(() => setTimeout(connectWS, 1500))
     const iv = setInterval(loadBase, 300000)
     return () => { clearInterval(iv); wsRef.current?.close() }
   }, [loadBase, connectWS])
@@ -147,53 +141,103 @@ export function useOHLC(coinId, days=7) {
   return { candles, loading }
 }
 
-// ── useAnalysis ───────────────────────────────────────────────
-// FIX: espera 1s antes de arrancar para no competir con la carga inicial
-// de precios. Después de eso lanza los 2 fetches en secuencia:
-// 1. historial del activo + BTC (fetchPriceHistory los hace internamente)
-// 2. precio actual del activo (fetchCoinsByIds)
+// ── useAnalysis — multi-timeframe con debounce 500ms ─────────
+// El debounce evita lanzar fetches al pasar rápido entre monedas.
+// Los 3 TF se cargan secuencialmente para no saturar la API:
+// 1D primero (más importante y va a cache largo),
+// luego 4H, luego 1H con 400ms de pausa entre ellos.
 export function useAnalysis(coinId) {
-  const [signal,   setSignal]   = useState(null)
-  const [coinData, setCoinData] = useState(null)
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState(null)
+  const [signal,      setSignal]      = useState(null)  // señal 1D principal
+  const [signal1h,    setSignal1h]    = useState(null)
+  const [signal4h,    setSignal4h]    = useState(null)
+  const [confluence,  setConfluence]  = useState(null)
+  const [trendChange, setTrendChange] = useState(null)
+  const [backtest,    setBacktest]    = useState(null)
+  const [coinData,    setCoinData]    = useState(null)
+  const [loading,     setLoading]     = useState(false)
+  const [loadingTF,   setLoadingTF]   = useState(false)
+  const [error,       setError]       = useState(null)
 
   useEffect(()=>{
-    if (!coinId) { setSignal(null); setCoinData(null); return }
-    setLoading(true); setError(null)
+    if (!coinId) {
+      setSignal(null); setSignal1h(null); setSignal4h(null)
+      setConfluence(null); setTrendChange(null); setBacktest(null); setCoinData(null)
+      return
+    }
 
     let cancelled = false
-    const run = async () => {
+    setLoading(true); setError(null)
+    // Limpiar señales previas para no mostrar datos de otra moneda
+    setSignal(null); setSignal1h(null); setSignal4h(null)
+    setConfluence(null); setTrendChange(null); setBacktest(null)
+
+    // Debounce 500ms — si el usuario cambia de moneda en menos de 500ms
+    // se cancela el fetch anterior antes de empezar
+    const debounceTimer = setTimeout(async () => {
+      if (cancelled) return
       try {
-        // Pequeño delay para no competir con carga inicial de precios
-        await new Promise(r => setTimeout(r, 300))
+        // ── 1D primero (más importante, cache 30min) ──────────
+        const { coin: hist1d, btc: btcHist } = await fetchPriceHistory(coinId, '1d')
         if (cancelled) return
 
-        const { coin:history, btc:btcHistory } = await fetchPriceHistory(coinId, 90)
+        const prices1d  = hist1d.prices.map(([,p])=>p)
+        const volumes1d = hist1d.total_volumes?.map(([,v])=>v)||null
+        const btcPrices = btcHist?.prices?.map(([,p])=>p)||null
+
+        const sig1d = generateSignal(prices1d, volumes1d, btcPrices)
+        if (!cancelled) {
+          setSignal(sig1d)
+          setTrendChange(detectTrendChange(prices1d, volumes1d))
+          setBacktest(runBacktest(prices1d, '90d'))
+          setLoading(false)
+          setLoadingTF(true)
+        }
+
+        // Precio actual — en paralelo con los TFs cortos
+        fetchCoinsByIds([coinId]).then(arr => {
+          if (!cancelled && arr?.length) setCoinData(arr[0])
+        })
+
+        // ── 4H ───────────────────────────────────────────────
+        await new Promise(r => setTimeout(r, 400))
         if (cancelled) return
-
-        const prices    = history.prices.map(([,p])=>p)
-        const volumes   = history.total_volumes?.map(([,v])=>v)||null
-        const btcPrices = btcHistory?.prices?.map(([,p])=>p)||null
-
-        setSignal(generateSignal(prices, volumes, btcPrices))
-
-        // Precio actual: fetch separado, después del historial
-        const coinArr = await fetchCoinsByIds([coinId])
+        const { coin: hist4h } = await fetchPriceHistory(coinId, '4h')
         if (cancelled) return
-        if (coinArr?.length) setCoinData(coinArr[0])
+        const prices4h  = hist4h.prices.map(([,p])=>p)
+        const volumes4h = hist4h.total_volumes?.map(([,v])=>v)||null
+        const sig4h = generateSignalTF(prices4h, volumes4h, '4H')
+        if (!cancelled) setSignal4h(sig4h)
+
+        // ── 1H ───────────────────────────────────────────────
+        await new Promise(r => setTimeout(r, 400))
+        if (cancelled) return
+        const { coin: hist1h } = await fetchPriceHistory(coinId, '1h')
+        if (cancelled) return
+        const prices1h  = hist1h.prices.map(([,p])=>p)
+        const volumes1h = hist1h.total_volumes?.map(([,v])=>v)||null
+        const sig1h = generateSignalTF(prices1h, volumes1h, '1H')
+        if (!cancelled) {
+          setSignal1h(sig1h)
+          setConfluence(calcConfluence(sig1h, sig4h, sig1d))
+          setLoadingTF(false)
+        }
 
       } catch(e) {
-        if (!cancelled) setError(e.message)
-      } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setError(e.message)
+          setLoading(false)
+          setLoadingTF(false)
+        }
       }
-    }
-    run()
-    return () => { cancelled = true }
-  },[coinId])
+    }, 500)  // debounce 500ms
 
-  return { signal, coinData, loading, error }
+    return () => {
+      cancelled = true
+      clearTimeout(debounceTimer)
+    }
+  }, [coinId])
+
+  return { signal, signal1h, signal4h, confluence, trendChange, backtest, coinData, loading, loadingTF, error }
 }
 
 export function useWatchlist() {

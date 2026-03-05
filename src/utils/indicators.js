@@ -403,5 +403,309 @@ export function generateSignal(prices, volumes=null, btcPrices=null) {
     signals,
     atr:atrData,
     btcCorrelation:btcCorr,
+    rawPrices: prices,
+    rawVolumes: volumes,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MULTI-TIMEFRAME + CAMBIO DE TENDENCIA + BACKTESTING
+// Añadido en v10.4
+// ═══════════════════════════════════════════════════════════════
+
+// ── Señal para un timeframe específico ───────────────────────
+// Versión ligera de generateSignal — solo los indicadores más
+// fiables para TF cortos (1H, 4H no tienen suficientes velas
+// para EMA200 ni ADX estable con 14 periodos exactos)
+export function generateSignalTF(prices, volumes=null, label='1D') {
+  if (!prices || prices.length < 20) return null
+
+  const highs = prices.map((p,i) => Math.max(p, i>0 ? prices[i-1] : p))
+  const lows  = prices.map((p,i) => Math.min(p, i>0 ? prices[i-1] : p))
+
+  const rsi14   = calcRSI(prices, 14)
+  const rsi7    = calcRSI(prices, 7)
+  const { histogram } = calcMACD(prices)
+  const ema20   = calcEMA(prices, 20)
+  const ema50   = calcEMA(prices, Math.min(50, Math.floor(prices.length * 0.6)))
+  const boll    = calcBollinger(prices, 20)
+  const stoch   = calcStochRSI(prices, 14, 14)
+  const willR   = calcWilliamsR(highs, lows, prices, 14)
+  const { adx: adxArr, pdi, mdi } = calcADX(highs, lows, prices)
+  const vol     = volumes ? analyzeVolume(prices, volumes) : null
+  const diverg  = detectDivergence(prices, rsi14)
+
+  const lastRSI   = rsi14[rsi14.length-1]
+  const lastHist  = histogram[histogram.length-1]
+  const prevHist  = histogram[histogram.length-2]
+  const lastBoll  = boll[boll.length-1]
+  const lastStoch = stoch[stoch.length-1]
+  const lastWillR = willR[willR.length-1]
+  const lastADX   = adxArr.length > 0 ? adxArr[adxArr.length-1] : null
+  const lastPDI   = pdi.length > 0 ? pdi[pdi.length-1] : null
+  const lastMDI   = mdi.length > 0 ? mdi[mdi.length-1] : null
+  const lastE20   = ema20[ema20.length-1]
+  const lastE50   = ema50[ema50.length-1]
+  const price     = prices[prices.length-1]
+
+  const lateral = lastADX != null && lastADX < 18
+  const bull    = lastE20 > lastE50
+
+  let score = 0, buys = 0, sells = 0
+
+  const add = (pts, isBuy) => { score += pts; if (isBuy) buys++; else sells++ }
+
+  // RSI
+  if (lastRSI < 30)       add(2, true)
+  else if (lastRSI > 70)  add(-2, false)
+  else if (lastRSI > 50 && bull) add(0.7, true)
+  else if (lastRSI < 50 && !bull) add(-0.7, false)
+
+  // Divergencia
+  if (diverg === 'bullish') add(2, true)
+  else if (diverg === 'bearish') add(-2, false)
+
+  // MACD
+  if (lastHist > 0 && prevHist <= 0) add(2, true)
+  else if (lastHist < 0 && prevHist >= 0) add(-2, false)
+  else if (lastHist > 0) add(0.5, true)
+  else add(-0.5, false)
+
+  // EMA
+  if (lastE20 > lastE50) add(1, true)
+  else add(-1, false)
+
+  // Bollinger
+  const price_ = prices[prices.length-1]
+  if (lastBoll) {
+    if (price_ < lastBoll.lower) add(1.5, true)
+    else if (price_ > lastBoll.upper) add(-1.5, false)
+  }
+
+  // Stoch RSI
+  if (lastStoch < 20) add(1, true)
+  else if (lastStoch > 80) add(-1, false)
+
+  // Williams %R
+  if (lastWillR < -80) add(1, true)
+  else if (lastWillR > -20) add(-1, false)
+
+  // ADX
+  if (lastADX > 25 && lastPDI > lastMDI) add(1, true)
+  else if (lastADX > 25 && lastPDI < lastMDI) add(-1, false)
+
+  // Volumen
+  if (vol) {
+    if (vol.signal === 'buy') add(0.8, true)
+    else if (vol.signal === 'sell') add(-0.8, false)
+    if (vol.obvTrend === 'up') add(0.5, true)
+    else if (vol.obvTrend === 'down') add(-0.5, false)
+  }
+
+  const total = buys + sells
+  let overall, strength
+  if (score >= 5)       { overall = 'COMPRAR'; strength = 'Fuerte' }
+  else if (score >= 2.5){ overall = 'COMPRAR'; strength = 'Moderado' }
+  else if (score <= -5) { overall = 'VENDER';  strength = 'Fuerte' }
+  else if (score <= -2.5){ overall = 'VENDER'; strength = 'Moderado' }
+  else                  { overall = 'NEUTRAL'; strength = lateral ? 'Lateral' : '' }
+
+  const confidence = total > 0 ? Math.round((Math.max(buys,sells)/total)*75 + (Math.abs(score)>4?15:0) + (lastADX>25?10:0)) : 40
+
+  return {
+    tf: label, overall, strength, score: Math.round(score*10)/10, confidence,
+    rsi: lastRSI, macdHist: lastHist, adx: lastADX,
+    ema20: lastE20, ema50: lastE50, stochRsi: lastStoch,
+    bollUpper: lastBoll?.upper, bollLower: lastBoll?.lower,
+    divergence: diverg, price,
+    buyCount: buys, sellCount: sells,
+  }
+}
+
+// ── Confluencia multi-timeframe ───────────────────────────────
+// Combina señales de 1H, 4H y 1D con pesos
+// 1D tiene más peso porque es la tendencia dominante
+export function calcConfluence(tf1h, tf4h, tf1d) {
+  const signals = [
+    { data: tf1h, weight: 1.0, label: '1H' },
+    { data: tf4h, weight: 1.5, label: '4H' },
+    { data: tf1d, weight: 2.0, label: '1D' },
+  ].filter(s => s.data != null)
+
+  if (signals.length === 0) return null
+
+  const toNum = s => s === 'COMPRAR' ? 1 : s === 'VENDER' ? -1 : 0
+  const totalWeight = signals.reduce((s, x) => s + x.weight, 0)
+  const weightedScore = signals.reduce((s, x) => s + toNum(x.data.overall) * x.weight * (x.data.confidence/100), 0)
+  const normalized = weightedScore / totalWeight
+
+  // Alineación: cuántos TFs apuntan en la misma dirección
+  const buys  = signals.filter(s => s.data.overall === 'COMPRAR').length
+  const sells = signals.filter(s => s.data.overall === 'VENDER').length
+  const alignment = Math.max(buys, sells) / signals.length
+
+  let overall, strength, color
+  if (normalized > 0.35)       { overall = 'COMPRAR'; strength = alignment > 0.85 ? 'Fuerte' : 'Moderado'; color = '#00D26A' }
+  else if (normalized < -0.35) { overall = 'VENDER';  strength = alignment > 0.85 ? 'Fuerte' : 'Moderado'; color = '#FF4D4D' }
+  else                         { overall = 'NEUTRAL'; strength = 'Sin confluencia clara'; color = '#FFCC00' }
+
+  const confidence = Math.round(alignment * 60 + Math.abs(normalized) * 40)
+
+  // Descripción de la confluencia
+  const aligned = buys === signals.length ? '✅ Todos los TF alcistas — señal fuerte'
+    : sells === signals.length ? '🔴 Todos los TF bajistas — señal fuerte'
+    : buys > sells ? `⚡ ${buys}/${signals.length} TF alcistas — confluencia parcial`
+    : sells > buys ? `⚡ ${sells}/${signals.length} TF bajistas — confluencia parcial`
+    : '⚠️ TFs divididos — espera confirmación'
+
+  return { overall, strength, color, confidence, alignment: Math.round(alignment*100), note: aligned, normalized, signals }
+}
+
+// ── Detección de cambio de tendencia ─────────────────────────
+// Combina 4 señales clásicas de reversión:
+// 1. Cruce de medias (EMA20 cruzando EMA50)
+// 2. ADX cayendo desde niveles altos (tendencia agotándose)
+// 3. Divergencia RSI confirmada
+// 4. MACD cruzando cero desde abajo/arriba
+export function detectTrendChange(prices, volumes=null) {
+  if (!prices || prices.length < 55) return null
+
+  const ema20 = calcEMA(prices, 20)
+  const ema50 = calcEMA(prices, 50)
+  const rsi   = calcRSI(prices, 14)
+  const { histogram } = calcMACD(prices)
+  const highs = prices.map((p,i) => Math.max(p, i>0 ? prices[i-1] : p))
+  const lows  = prices.map((p,i) => Math.min(p, i>0 ? prices[i-1] : p))
+  const { adx: adxArr } = calcADX(highs, lows, prices)
+
+  const n = Math.min(ema20.length, ema50.length)
+  const e20 = ema20.slice(-n)
+  const e50 = ema50.slice(-n)
+
+  // Cruce de medias en los últimos 3 periodos
+  const crossBull = e20[n-2] <= e50[n-2] && e20[n-1] > e50[n-1]  // EMA20 cruza SOBRE EMA50
+  const crossBear = e20[n-2] >= e50[n-2] && e20[n-1] < e50[n-1]  // EMA20 cruza BAJO EMA50
+
+  // ADX: ¿estaba fuerte y ahora cae? (tendencia agotándose)
+  const adxLast = adxArr[adxArr.length-1]
+  const adxPrev = adxArr[adxArr.length-5] || adxLast
+  const adxFading = adxLast > 20 && adxLast < adxPrev - 5  // cayó >5 puntos
+
+  // MACD cruzando cero
+  const hist = histogram
+  const macdBullCross = hist[hist.length-2] < 0 && hist[hist.length-1] > 0
+  const macdBearCross = hist[hist.length-2] > 0 && hist[hist.length-1] < 0
+
+  // RSI divergencia
+  const diverg = detectDivergence(prices, rsi)
+
+  // Score de reversión
+  let bullSignals = 0, bearSignals = 0
+  const reasons = []
+
+  if (crossBull)     { bullSignals += 2; reasons.push({ type:'buy', txt:'Cruce alcista EMA20/50 (golden cross corto)' }) }
+  if (crossBear)     { bearSignals += 2; reasons.push({ type:'sell', txt:'Cruce bajista EMA20/50 (death cross corto)' }) }
+  if (macdBullCross) { bullSignals += 2; reasons.push({ type:'buy',  txt:'MACD cruzando cero al alza' }) }
+  if (macdBearCross) { bearSignals += 2; reasons.push({ type:'sell', txt:'MACD cruzando cero a la baja' }) }
+  if (diverg === 'bullish') { bullSignals += 1.5; reasons.push({ type:'buy',  txt:'Divergencia RSI alcista — precio baja pero RSI sube' }) }
+  if (diverg === 'bearish') { bearSignals += 1.5; reasons.push({ type:'sell', txt:'Divergencia RSI bajista — precio sube pero RSI baja' }) }
+  if (adxFading && e20[n-1] > e50[n-1]) { bearSignals += 1; reasons.push({ type:'sell', txt:`ADX cayendo (${adxPrev.toFixed(0)}→${adxLast.toFixed(0)}) — tendencia alcista agotándose` }) }
+  if (adxFading && e20[n-1] < e50[n-1]) { bullSignals += 1; reasons.push({ type:'buy',  txt:`ADX cayendo (${adxPrev.toFixed(0)}→${adxLast.toFixed(0)}) — tendencia bajista perdiendo fuerza` }) }
+
+  const maxScore = Math.max(bullSignals, bearSignals)
+  if (maxScore < 2) return { signal: 'none', probability: 0, reasons: [] }
+
+  const isBull  = bullSignals > bearSignals
+  const prob    = Math.min(95, Math.round((maxScore / 6.5) * 100))
+  const signal  = isBull ? 'long' : 'short'
+  const label   = isBull
+    ? `Posible LONG — cambio a tendencia alcista`
+    : `Posible SHORT — cambio a tendencia bajista`
+  const color   = isBull ? '#00D26A' : '#FF4D4D'
+
+  return { signal, label, color, probability: prob, reasons, adx: adxLast }
+}
+
+// ── Backtesting simple ────────────────────────────────────────
+// Simula la estrategia de señal cruzada de EMAs con RSI de confirmación
+// sobre el histórico del activo. Calcula win rate, profit factor, max drawdown.
+export function runBacktest(prices, period='90d') {
+  if (!prices || prices.length < 55) return null
+
+  // Definir ventana según periodo
+  const windowMap = { '7d': 7, '30d': 30, '90d': prices.length }
+  const w = windowMap[period] || prices.length
+  const slice = prices.slice(-Math.min(w, prices.length))
+
+  if (slice.length < 50) return null
+
+  const ema20 = calcEMA(slice, 20)
+  const ema50 = calcEMA(slice, Math.min(50, Math.floor(slice.length * 0.6)))
+  const rsi   = calcRSI(slice, 14)
+
+  // Alinear arrays — todos deben tener la misma longitud
+  const n = Math.min(ema20.length, ema50.length, rsi.length)
+  const e20 = ema20.slice(-n)
+  const e50 = ema50.slice(-n)
+  const r14 = rsi.slice(-n)
+  const px  = slice.slice(slice.length - n)
+
+  const trades = []
+  let inTrade = null  // { type, entry, entryIdx }
+
+  for (let i = 1; i < n; i++) {
+    const crossBull = e20[i-1] <= e50[i-1] && e20[i] > e50[i] && r14[i] < 65
+    const crossBear = e20[i-1] >= e50[i-1] && e20[i] < e50[i] && r14[i] > 35
+
+    if (!inTrade && crossBull) {
+      inTrade = { type: 'long', entry: px[i], entryIdx: i }
+    } else if (!inTrade && crossBear) {
+      inTrade = { type: 'short', entry: px[i], entryIdx: i }
+    } else if (inTrade) {
+      const shouldClose = inTrade.type === 'long' ? crossBear : crossBull
+      if (shouldClose || i === n - 1) {
+        const exit  = px[i]
+        const pnl   = inTrade.type === 'long'
+          ? ((exit - inTrade.entry) / inTrade.entry) * 100
+          : ((inTrade.entry - exit) / inTrade.entry) * 100
+        trades.push({ ...inTrade, exit, exitIdx: i, pnl, won: pnl > 0 })
+        inTrade = null
+        if (shouldClose) {
+          inTrade = crossBull
+            ? { type: 'long',  entry: px[i], entryIdx: i }
+            : { type: 'short', entry: px[i], entryIdx: i }
+        }
+      }
+    }
+  }
+
+  if (trades.length === 0) return { trades: [], winRate: 0, totalReturn: 0, avgWin: 0, avgLoss: 0, maxDrawdown: 0, profitFactor: 0 }
+
+  const wins  = trades.filter(t => t.won)
+  const loses = trades.filter(t => !t.won)
+  const winRate     = Math.round((wins.length / trades.length) * 100)
+  const totalReturn = trades.reduce((s, t) => s + t.pnl, 0)
+  const avgWin  = wins.length  ? wins.reduce((s,t)=>s+t.pnl,0)/wins.length  : 0
+  const avgLoss = loses.length ? Math.abs(loses.reduce((s,t)=>s+t.pnl,0)/loses.length) : 0
+  const profitFactor = avgLoss > 0 ? avgWin / avgLoss : avgWin > 0 ? 99 : 0
+
+  // Max Drawdown: mayor caída acumulada desde pico
+  let peak = 0, dd = 0, maxDD = 0, cum = 0
+  for (const t of trades) {
+    cum += t.pnl
+    if (cum > peak) peak = cum
+    dd = peak - cum
+    if (dd > maxDD) maxDD = dd
+  }
+
+  return {
+    trades: trades.slice(-20),  // últimas 20 operaciones
+    total: trades.length,
+    winRate, totalReturn: Math.round(totalReturn*100)/100,
+    avgWin: Math.round(avgWin*100)/100,
+    avgLoss: Math.round(avgLoss*100)/100,
+    maxDrawdown: Math.round(maxDD*100)/100,
+    profitFactor: Math.round(profitFactor*100)/100,
+    period,
   }
 }
