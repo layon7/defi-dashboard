@@ -618,9 +618,9 @@ function AnalysisTab({prices,watchlist,isMobile}) {
                           <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 9px',background:t.won?'rgba(0,210,106,.04)':'rgba(255,77,77,.04)',borderRadius:5,border:`1px solid ${t.won?'rgba(0,210,106,.15)':'rgba(255,77,77,.15)'}`}}>
                             <div style={{display:'flex',alignItems:'center',gap:8}}>
                               <span style={{fontSize:10,fontWeight:700,color:t.type==='long'?GREEN:RED,border:`1px solid ${t.type==='long'?'rgba(0,210,106,.3)':'rgba(255,77,77,.3)'}`,padding:'1px 6px',borderRadius:3}}>{t.type==='long'?'LONG':'SHORT'}</span>
-                              <span style={{fontSize:10,color:DIM}}>E: ${"{"}t.entry?.toLocaleString('en-US',{maximumFractionDigits:4}){"}"} → S: ${"{"}t.exit?.toLocaleString('en-US',{maximumFractionDigits:4}){"}"}</span>
+                              <span style={{fontSize:10,color:DIM}}>E: ${t.entry?.toLocaleString('en-US',{maximumFractionDigits:4})} → S: ${t.exit?.toLocaleString('en-US',{maximumFractionDigits:4})}</span>
                             </div>
-                            <span style={{fontSize:12,fontWeight:700,color:t.won?GREEN:RED}}>{"{"}t.pnl>0?'+':''}{"{"}{"{"}t.pnl?.toFixed(2){"}"}%</span>
+                            <span style={{fontSize:12,fontWeight:700,color:t.won?GREEN:RED}}>{t.pnl>0?'+':''}{t.pnl?.toFixed(2)}%</span>
                           </div>
                         ))}
                       </div>
