@@ -30,7 +30,10 @@ export const CHAIN_NAMES = {
   fantom:'FTM', gnosis:'GNO', zksync:'zkSync', linea:'Linea',
 }
 
-// ── usePrices — carga parcial inmediata + WS Binance ─────────
+// ── usePrices ─────────────────────────────────────────────────
+// FIX: espera 1.5s antes de conectar el WebSocket
+// para no lanzar la conexión WS mientras aún están cargando
+// los datos iniciales de CoinGecko (evita competencia de red)
 export function usePrices() {
   const [prices,   setPrices]   = useState([])
   const [loading,  setLoading]  = useState(true)
@@ -39,7 +42,6 @@ export function usePrices() {
 
   const loadBase = useCallback(async () => {
     try {
-      // onPartial → actualiza UI tan pronto llegan páginas 1+2
       await fetchCoinGeckoPrices(partial => {
         if (partial.length) {
           pricesRef.current = partial
@@ -57,7 +59,7 @@ export function usePrices() {
     wsRef.current = ws
     ws.onopen  = () => setWsStatus('live')
     ws.onerror = () => setWsStatus('error')
-    ws.onclose = () => { setWsStatus('connecting'); setTimeout(connectWS, 3000) }
+    ws.onclose = () => { setWsStatus('connecting'); setTimeout(connectWS, 5000) }
     ws.onmessage = evt => {
       try {
         const { data: p } = JSON.parse(evt.data)
@@ -73,7 +75,10 @@ export function usePrices() {
   }, [])
 
   useEffect(() => {
-    loadBase().then(connectWS)
+    // Primero carga precios, luego conecta WS con delay para no saturar
+    loadBase().then(() => {
+      setTimeout(connectWS, 1500)
+    })
     const iv = setInterval(loadBase, 300000)
     return () => { clearInterval(iv); wsRef.current?.close() }
   }, [loadBase, connectWS])
@@ -142,9 +147,11 @@ export function useOHLC(coinId, days=7) {
   return { candles, loading }
 }
 
-// ── useAnalysis — carga historia + BTC + precio en paralelo ──
-// Antes: 3 llamadas secuenciales = 6-9s
-// Ahora: todo en Promise.all = ~2.5s (limitado por la más lenta)
+// ── useAnalysis ───────────────────────────────────────────────
+// FIX: espera 1s antes de arrancar para no competir con la carga inicial
+// de precios. Después de eso lanza los 2 fetches en secuencia:
+// 1. historial del activo + BTC (fetchPriceHistory los hace internamente)
+// 2. precio actual del activo (fetchCoinsByIds)
 export function useAnalysis(coinId) {
   const [signal,   setSignal]   = useState(null)
   const [coinData, setCoinData] = useState(null)
@@ -155,27 +162,35 @@ export function useAnalysis(coinId) {
     if (!coinId) { setSignal(null); setCoinData(null); return }
     setLoading(true); setError(null)
 
+    let cancelled = false
     const run = async () => {
       try {
-        // TODO en paralelo — fetchPriceHistory ya carga BTC internamente en paralelo
-        const [{ coin:history, btc:btcHistory }, coinArr] = await Promise.all([
-          fetchPriceHistory(coinId, 90),
-          fetchCoinsByIds([coinId]),
-        ])
+        // Pequeño delay para no competir con carga inicial de precios
+        await new Promise(r => setTimeout(r, 300))
+        if (cancelled) return
+
+        const { coin:history, btc:btcHistory } = await fetchPriceHistory(coinId, 90)
+        if (cancelled) return
+
         const prices    = history.prices.map(([,p])=>p)
         const volumes   = history.total_volumes?.map(([,v])=>v)||null
         const btcPrices = btcHistory?.prices?.map(([,p])=>p)||null
 
-        // generateSignal ahora recibe btcPrices para correlación y ATR
         setSignal(generateSignal(prices, volumes, btcPrices))
+
+        // Precio actual: fetch separado, después del historial
+        const coinArr = await fetchCoinsByIds([coinId])
+        if (cancelled) return
         if (coinArr?.length) setCoinData(coinArr[0])
+
       } catch(e) {
-        setError(e.message)
+        if (!cancelled) setError(e.message)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     run()
+    return () => { cancelled = true }
   },[coinId])
 
   return { signal, coinData, loading, error }
